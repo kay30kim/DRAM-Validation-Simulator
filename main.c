@@ -12,22 +12,57 @@ static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
     char *endptr = NULL;
     unsigned long value = 0;
 
-    if (out_mb == NULL) {
+    if (out_mb == NULL)
+    {
         return -1;
     }
 
-    if (argc < 2) {
+    if (argc < 2)
+    {
         *out_mb = DEFAULT_DRAM_MB;
         return 0;
     }
 
     errno = 0;
     value = strtoul(argv[1], &endptr, 10);
-    if (errno != 0 || endptr == argv[1] || *endptr != '\0' || value == 0) {
+    if (errno != 0 || endptr == argv[1] || *endptr != '\0' || value == 0)
+    {
         return -1;
     }
 
     *out_mb = (size_t)value;
+    return 0;
+}
+
+static int run_basic_rw_smoke_test(Dram *dram)
+{
+    uint32_t value = 0;
+    uint32_t address = 0x1000;
+    uint32_t expected = 0xA5A5A5A5U;
+
+    printf("[TEST] Basic 32-bit read/write smoke test\n");
+
+    if (dram_write32(dram, address, expected) != 0)
+    {
+        printf("[FAIL] write failed at addr=0x%08X\n", address);
+        return -1;
+    }
+
+    if (dram_read32(dram, address, &value) != 0)
+    {
+        printf("[FAIL] read failed at addr=0x%08X\n", address);
+        return -1;
+    }
+
+    if (value != expected)
+    {
+        printf("[FAIL] addr=0x%08X expected=0x%08X actual=0x%08X\n",
+               address, expected, value);
+        return -1;
+    }
+
+    printf("[PASS] addr=0x%08X expected=0x%08X actual=0x%08X\n",
+           address, expected, value);
     return 0;
 }
 
@@ -37,7 +72,8 @@ int main(int argc, char **argv)
     size_t dram_mb = 0;
     size_t dram_bytes = 0;
 
-    if (parse_dram_size_mb(argc, argv, &dram_mb) != 0) {
+    if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
+    {
         fprintf(stderr, "Usage: %s [dram_size_mb]\n", argv[0]);
         return 1;
     }
@@ -47,7 +83,8 @@ int main(int argc, char **argv)
     printf("[BOOT] C-Based DRAM Validation Simulator\n");
     printf("[DRAM] Initializing virtual DRAM: %zu MB\n", dram_mb);
 
-    if (dram_init(&dram, dram_bytes) != 0) {
+    if (dram_init(&dram, dram_bytes) != 0)
+    {
         fprintf(stderr, "[ERROR] Failed to initialize virtual DRAM\n");
         return 1;
     }
@@ -56,6 +93,11 @@ int main(int argc, char **argv)
     printf("[INFO] Day 1 commit 1 scope: allocation/free model only\n");
     printf("[INFO] Read/write APIs and memory tests will be added in later commits\n");
 
+    if (run_basic_rw_smoke_test(&dram) != 0)
+    {
+        dram_free(&dram);
+        return 1;
+    }
     dram_free(&dram);
     printf("[DRAM] Virtual DRAM released\n");
 
