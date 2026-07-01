@@ -1,4 +1,5 @@
 #include "dram_model.h"
+#include "error_injection.h"
 #include "logger.h"
 #include "memory_test.h"
 
@@ -86,13 +87,22 @@ int main(int argc, char **argv)
     Dram dram;
     Logger logger;
     MemoryTestResult pattern_result;
+    MemoryTestResult verify_result;
+    FaultInjectionResult injection_result;
     size_t dram_mb = 0;
     size_t dram_bytes = 0;
     uint32_t smoke_address = 0x1000U;
     uint32_t smoke_expected = 0xA5A5A5A5U;
     uint32_t smoke_actual = 0;
+    uint32_t pattern_start = 0x2000U;
+    size_t pattern_length = 64U * 1024U;
+    uint32_t pattern = 0xAAAAAAAAU;
+    uint32_t injected_address = 0x3000U;
+    uint32_t injected_mask = 0x00000001U;
     int smoke_pass = 0;
     int pattern_pass = 0;
+    int verify_pass = 0;
+    int injected_fault_detected = 0;
 
     if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
     {
@@ -141,16 +151,16 @@ int main(int argc, char **argv)
     }
 
     pattern_pass = memory_test_constant_pattern(&dram,
-                                                0x2000U,
-                                                64U * 1024U,
-                                                0xAAAAAAAAU,
+                                                pattern_start,
+                                                pattern_length,
+                                                pattern,
                                                 &pattern_result) == 0;
     logger_log_memory_test(&logger,
                            "constant_pattern",
                            pattern_pass,
-                           0x2000U,
-                           64U * 1024U,
-                           0xAAAAAAAAU,
+                           pattern_start,
+                           pattern_length,
+                           pattern,
                            &pattern_result);
 
     if (!pattern_pass)
@@ -160,7 +170,39 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("[RESULT] PASS\n");
+    if (inject_bit_flip32(&dram,
+                          injected_address,
+                          injected_mask,
+                          &injection_result) != 0)
+    {
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    verify_pass = memory_test_verify_constant_pattern(&dram,
+                                                      pattern_start,
+                                                      pattern_length,
+                                                      pattern,
+                                                      &verify_result) == 0;
+    logger_log_memory_test(&logger,
+                           "constant_pattern_after_bit_flip",
+                           verify_pass,
+                           pattern_start,
+                           pattern_length,
+                           pattern,
+                           &verify_result);
+
+    injected_fault_detected = !verify_pass && verify_result.error_count > 0;
+    if (!injected_fault_detected)
+    {
+        printf("[RESULT] FAIL: injected fault was not detected\n");
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    printf("[RESULT] PASS: injected bit flip was detected\n");
     dram_free(&dram);
     logger_close(&logger);
     printf("[DRAM] Virtual DRAM released\n");
