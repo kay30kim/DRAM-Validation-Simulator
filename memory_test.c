@@ -21,7 +21,7 @@ void memory_test_result_init(MemoryTestResult *result)
     result->first_actual = 0;
 }
 
-int memory_test_constant_pattern(Dram *dram,
+int memory_test_constant_pattern(DramModel *dram,
                                  uint32_t start_address,
                                  size_t length_bytes,
                                  uint32_t pattern,
@@ -121,7 +121,7 @@ int memory_test_constant_pattern(Dram *dram,
     return 0;
 }
 
-int memory_test_verify_constant_pattern(Dram *dram,
+int memory_test_verify_constant_pattern(DramModel *dram,
                                         uint32_t start_address,
                                         size_t length_bytes,
                                         uint32_t expected_pattern,

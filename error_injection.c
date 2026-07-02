@@ -2,7 +2,7 @@
 
 #include <stdio.h>
 
-int inject_bit_flip32(Dram *dram,
+int inject_bit_flip32(DramModel *dram,
                       uint32_t address,
                       uint32_t bit_mask,
                       FaultInjectionResult *result)

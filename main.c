@@ -39,7 +39,7 @@ static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
     return 0;
 }
 
-static int run_basic_rw_smoke_test(Dram *dram,
+static int run_basic_rw_smoke_test(DramModel *dram,
                                    uint32_t address,
                                    uint32_t expected,
                                    uint32_t *out_actual)
@@ -84,7 +84,7 @@ static int run_basic_rw_smoke_test(Dram *dram,
 
 int main(int argc, char **argv)
 {
-    Dram dram;
+    DramModel dram;
     Logger logger;
     MemoryTestResult pattern_result;
     MemoryTestResult verify_result;
