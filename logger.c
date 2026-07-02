@@ -57,7 +57,7 @@ int logger_log_smoke_test(Logger *logger,
     }
 
     fprintf(logger->stream,
-            "%s,%s,0x%08X,%zu,0x%08X,%zu,%zu,0x%08X,0x%08X,0x%08X\n",
+            "%s,%s,=\"0x%08X\",%zu,=\"0x%08X\",%zu,%zu,=\"0x%08X\",=\"0x%08X\",=\"0x%08X\"\n",
             test_name,
             status_string(pass),
             address,
@@ -102,7 +102,7 @@ int logger_log_memory_test(Logger *logger,
     }
 
     fprintf(logger->stream,
-            "%s,%s,0x%08X,%zu,0x%08X,%zu,%zu,0x%08X,0x%08X,0x%08X\n",
+            "%s,%s,=\"0x%08X\",%zu,=\"0x%08X\",%zu,%zu,=\"0x%08X\",=\"0x%08X\",=\"0x%08X\"\n",
             test_name,
             status_string(pass),
             start_address,
