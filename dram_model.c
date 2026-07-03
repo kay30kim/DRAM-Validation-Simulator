@@ -8,6 +8,60 @@ static int is_aligned32(uint32_t address)
     return (address % 4U) == 0U;
 }
 
+static int dram_geometry_init(DramGeometry *geometry, size_t size_bytes)
+{
+    size_t total_banks = 0;
+    size_t bank_size = 0;
+    size_t rank_size = 0;
+    size_t channel_size = 0;
+    size_t modelled_size = 0;
+    uint32_t rows_per_bank = 0;
+
+    if (geometry == NULL || size_bytes == 0)
+    {
+        return -1;
+    }
+
+    memset(geometry, 0, sizeof(*geometry));
+
+    total_banks = (size_t)DRAM_DEFAULT_CHANNELS *
+                  (size_t)DRAM_DEFAULT_RANKS_PER_CHANNEL *
+                  (size_t)DRAM_DEFAULT_BANKS_PER_RANK;
+    if (total_banks == 0)
+    {
+        return -1;
+    }
+
+    bank_size = size_bytes / total_banks;
+    rows_per_bank = (uint32_t)(bank_size / DRAM_DEFAULT_ROW_SIZE_BYTES);
+    if (rows_per_bank == 0)
+    {
+        return -1;
+    }
+
+    bank_size = (size_t)rows_per_bank * (size_t)DRAM_DEFAULT_ROW_SIZE_BYTES;
+    rank_size = bank_size * (size_t)DRAM_DEFAULT_BANKS_PER_RANK;
+    channel_size = rank_size * (size_t)DRAM_DEFAULT_RANKS_PER_CHANNEL;
+    modelled_size = channel_size * (size_t)DRAM_DEFAULT_CHANNELS;
+
+    if (modelled_size == 0 || modelled_size > size_bytes)
+    {
+        return -1;
+    }
+
+    geometry->channels = DRAM_DEFAULT_CHANNELS;
+    geometry->ranks_per_channel = DRAM_DEFAULT_RANKS_PER_CHANNEL;
+    geometry->banks_per_rank = DRAM_DEFAULT_BANKS_PER_RANK;
+    geometry->row_size_bytes = DRAM_DEFAULT_ROW_SIZE_BYTES;
+    geometry->rows_per_bank = rows_per_bank;
+    geometry->bank_size_bytes = bank_size;
+    geometry->rank_size_bytes = rank_size;
+    geometry->channel_size_bytes = channel_size;
+    geometry->modelled_size_bytes = modelled_size;
+
+    return 0;
+}
+
 static uint32_t apply_read_faults32(const DramModel *dram, uint32_t address, uint32_t value)
 {
     size_t index;
@@ -31,7 +85,6 @@ static uint32_t apply_read_faults32(const DramModel *dram, uint32_t address, uin
     return faulted_value;
 }
 
-
 static uint32_t apply_write_faults32(const DramModel *dram, uint32_t address, uint32_t value)
 {
     (void)dram;
@@ -48,6 +101,11 @@ int dram_init(DramModel *dram, size_t size_bytes)
     }
 
     memset(dram, 0, sizeof(*dram));
+
+    if (dram_geometry_init(&dram->geometry, size_bytes) != 0)
+    {
+        return -1;
+    }
 
     dram->data = (uint8_t *)calloc(size_bytes, sizeof(uint8_t));
     if (dram->data == NULL)
@@ -71,6 +129,7 @@ void dram_free(DramModel *dram)
     free(dram->data);
     dram->data = NULL;
     dram->size_bytes = 0;
+    memset(&dram->geometry, 0, sizeof(dram->geometry));
     dram_clear_faults(dram);
 }
 
@@ -82,6 +141,26 @@ size_t dram_size_bytes(const DramModel *dram)
     }
 
     return dram->size_bytes;
+}
+
+size_t dram_modelled_size_bytes(const DramModel *dram)
+{
+    if (dram == NULL)
+    {
+        return 0;
+    }
+
+    return dram->geometry.modelled_size_bytes;
+}
+
+const DramGeometry *dram_geometry(const DramModel *dram)
+{
+    if (dram == NULL)
+    {
+        return NULL;
+    }
+
+    return &dram->geometry;
 }
 
 int dram_is_initialized(const DramModel *dram)
