@@ -3,9 +3,15 @@
 dram_test
 *.csv
 
+# UEFI 생성물/바이너리
+uefi/ovmf/
+uefi/esp/
+
 # etc
 venv/
 .venv/
 env/
 .DS_Store
 .vscode/
+scripts/
+SETUP.md
