@@ -25,6 +25,15 @@ typedef struct DramGeometry
     size_t modelled_size_bytes;
 } DramGeometry;
 
+typedef struct DramAddress
+{
+    uint32_t channel;
+    uint32_t rank;
+    uint32_t bank;
+    uint32_t row;
+    uint32_t column;
+} DramAddress;
+
 typedef struct DramFault
 {
     int active;
@@ -51,6 +60,9 @@ int dram_is_initialized(const DramModel *dram);
 int dram_is_valid_range(const DramModel *dram, uint32_t address, size_t length);
 int dram_write32(DramModel *dram, uint32_t address, uint32_t value);
 int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value);
+
+int dram_decode_address(const DramModel *dram, uint32_t address, DramAddress *decoded);
+int dram_encode_address(const DramModel *dram, const DramAddress *decoded, uint32_t *address);
 
 int dram_add_bit_flip_fault(DramModel *dram, uint32_t address, uint32_t bit_mask);
 void dram_clear_faults(DramModel *dram);

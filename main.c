@@ -39,6 +39,121 @@ static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
     return 0;
 }
 
+
+static void print_dram_geometry(const DramModel *dram)
+{
+    const DramGeometry *geometry = dram_geometry(dram);
+
+    if (geometry == NULL)
+    {
+        return;
+    }
+
+    printf("[DRAM] Geometry: channels=%u ranks/channel=%u banks/rank=%u rows/bank=%u row_size=%u bytes\n",
+           geometry->channels,
+           geometry->ranks_per_channel,
+           geometry->banks_per_rank,
+           geometry->rows_per_bank,
+           geometry->row_size_bytes);
+    printf("[DRAM] Geometry sizes: channel=%zu bytes rank=%zu bytes bank=%zu bytes modelled=%zu bytes\n",
+           geometry->channel_size_bytes,
+           geometry->rank_size_bytes,
+           geometry->bank_size_bytes,
+           geometry->modelled_size_bytes);
+}
+
+
+static void print_decoded_address(uint32_t address, const DramAddress *decoded)
+{
+    if (decoded == NULL)
+    {
+        return;
+    }
+
+    printf("[ADDR] addr=0x%08X -> CH%u RANK%u BANK%u ROW%u COL%u\n",
+           address,
+           decoded->channel,
+           decoded->rank,
+           decoded->bank,
+           decoded->row,
+           decoded->column);
+}
+
+static int dram_address_equals(const DramAddress *left, const DramAddress *right)
+{
+    if (left == NULL || right == NULL)
+    {
+        return 0;
+    }
+
+    return left->channel == right->channel &&
+           left->rank == right->rank &&
+           left->bank == right->bank &&
+           left->row == right->row &&
+           left->column == right->column;
+}
+
+static int run_address_decode_smoke_test(const DramModel *dram)
+{
+    const DramGeometry *geometry = dram_geometry(dram);
+    uint32_t channel = 0;
+    uint32_t bank = 0;
+    size_t probes = 0;
+
+    if (geometry == NULL)
+    {
+        return -1;
+    }
+
+    printf("[TEST] Address decode/encode smoke test\n");
+
+    for (channel = 0; channel < geometry->channels; channel++)
+    {
+        for (bank = 0; bank < geometry->banks_per_rank; bank++)
+        {
+            DramAddress expected;
+            DramAddress actual;
+            uint32_t encoded_address = 0;
+
+            expected.channel = channel;
+            expected.rank = 0;
+            expected.bank = bank;
+            expected.row = 0;
+            expected.column = 0x1000U;
+
+            if (expected.column >= geometry->row_size_bytes)
+            {
+                expected.column = 0;
+            }
+
+            if (dram_encode_address(dram, &expected, &encoded_address) != 0)
+            {
+                printf("[FAIL] encode failed for CH%u BANK%u\n", channel, bank);
+                return -1;
+            }
+
+            if (dram_decode_address(dram, encoded_address, &actual) != 0)
+            {
+                printf("[FAIL] decode failed for addr=0x%08X\n", encoded_address);
+                return -1;
+            }
+
+            print_decoded_address(encoded_address, &actual);
+
+            if (!dram_address_equals(&expected, &actual))
+            {
+                printf("[FAIL] encode/decode mismatch for addr=0x%08X\n", encoded_address);
+                return -1;
+            }
+
+            probes++;
+        }
+    }
+
+    printf("[PASS] address decode/encode smoke test completed: probes=%zu\n", probes);
+    return 0;
+}
+
 static int run_basic_rw_smoke_test(DramModel *dram,
                                    uint32_t address,
                                    uint32_t expected,
@@ -131,6 +246,14 @@ int main(int argc, char **argv)
     }
 
     printf("[DRAM] Virtual DRAM initialized: %zu bytes\n", dram_size_bytes(&dram));
+    print_dram_geometry(&dram);
+
+    if (run_address_decode_smoke_test(&dram) != 0)
+    {
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
 
     smoke_pass = run_basic_rw_smoke_test(&dram,
                                          smoke_address,

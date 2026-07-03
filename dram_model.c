@@ -1,5 +1,6 @@
 #include "dram_model.h"
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -228,6 +229,77 @@ int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value)
 
     memcpy(&raw_value, &dram->data[address], sizeof(raw_value));
     *out_value = apply_read_faults32(dram, address, raw_value);
+    return 0;
+}
+
+int dram_decode_address(const DramModel *dram, uint32_t address, DramAddress *decoded)
+{
+    const DramGeometry *geometry = NULL;
+    size_t remaining = 0;
+
+    if (dram == NULL || decoded == NULL)
+    {
+        return -1;
+    }
+
+    geometry = &dram->geometry;
+    if ((size_t)address >= geometry->modelled_size_bytes)
+    {
+        return -1;
+    }
+
+    memset(decoded, 0, sizeof(*decoded));
+
+    remaining = (size_t)address;
+
+    decoded->channel = (uint32_t)(remaining / geometry->channel_size_bytes);
+    remaining %= geometry->channel_size_bytes;
+
+    decoded->rank = (uint32_t)(remaining / geometry->rank_size_bytes);
+    remaining %= geometry->rank_size_bytes;
+
+    decoded->bank = (uint32_t)(remaining / geometry->bank_size_bytes);
+    remaining %= geometry->bank_size_bytes;
+
+    decoded->row = (uint32_t)(remaining / geometry->row_size_bytes);
+    decoded->column = (uint32_t)(remaining % geometry->row_size_bytes);
+
+    return 0;
+}
+
+int dram_encode_address(const DramModel *dram, const DramAddress *decoded, uint32_t *address)
+{
+    const DramGeometry *geometry = NULL;
+    size_t encoded = 0;
+
+    if (dram == NULL || decoded == NULL || address == NULL)
+    {
+        return -1;
+    }
+
+    geometry = &dram->geometry;
+
+    if (decoded->channel >= geometry->channels ||
+        decoded->rank >= geometry->ranks_per_channel ||
+        decoded->bank >= geometry->banks_per_rank ||
+        decoded->row >= geometry->rows_per_bank ||
+        decoded->column >= geometry->row_size_bytes)
+    {
+        return -1;
+    }
+
+    encoded = ((size_t)decoded->channel * geometry->channel_size_bytes) +
+              ((size_t)decoded->rank * geometry->rank_size_bytes) +
+              ((size_t)decoded->bank * geometry->bank_size_bytes) +
+              ((size_t)decoded->row * geometry->row_size_bytes) +
+              (size_t)decoded->column;
+
+    if (encoded > UINT32_MAX || encoded >= geometry->modelled_size_bytes)
+    {
+        return -1;
+    }
+
+    *address = (uint32_t)encoded;
     return 0;
 }
 
