@@ -25,5 +25,8 @@ int memory_test_verify_constant_pattern(DramModel *dram,
                                         size_t length_bytes,
                                         uint32_t expected_pattern,
                                         MemoryTestResult *result);
+int memory_test_topology_pattern(DramModel *dram,
+                                 uint32_t base_pattern,
+                                 MemoryTestResult *result);
 
 #endif /* MEMORY_TEST_H */

@@ -201,11 +201,13 @@ int main(int argc, char **argv)
 {
     DramModel dram;
     Logger logger;
+    MemoryTestResult topology_result;
     MemoryTestResult pattern_result;
     MemoryTestResult verify_result;
     FaultInjectionResult injection_result;
     size_t dram_mb = 0;
     size_t dram_bytes = 0;
+    uint32_t topology_pattern = 0xC3C3C3C3U;
     uint32_t smoke_address = 0x1000U;
     uint32_t smoke_expected = 0xA5A5A5A5U;
     uint32_t smoke_actual = 0;
@@ -214,6 +216,7 @@ int main(int argc, char **argv)
     uint32_t pattern = 0xAAAAAAAAU;
     uint32_t injected_address = 0x3000U;
     uint32_t injected_mask = 0x00000001U;
+    int topology_pass = 0;
     int smoke_pass = 0;
     int pattern_pass = 0;
     int verify_pass = 0;
@@ -249,6 +252,24 @@ int main(int argc, char **argv)
     print_dram_geometry(&dram);
 
     if (run_address_decode_smoke_test(&dram) != 0)
+    {
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    topology_pass = memory_test_topology_pattern(&dram,
+                                                  topology_pattern,
+                                                  &topology_result) == 0;
+    logger_log_memory_test(&logger,
+                           "topology_pattern",
+                           topology_pass,
+                           0U,
+                           topology_result.words_tested * sizeof(uint32_t),
+                           topology_pattern,
+                           &topology_result);
+
+    if (!topology_pass)
     {
         dram_free(&dram);
         logger_close(&logger);

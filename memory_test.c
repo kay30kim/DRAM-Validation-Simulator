@@ -214,3 +214,176 @@ int memory_test_verify_constant_pattern(DramModel *dram,
 
     return 0;
 }
+
+static uint32_t topology_pattern_for_location(uint32_t base_pattern,
+                                              uint32_t channel,
+                                              uint32_t rank,
+                                              uint32_t bank)
+{
+    return base_pattern ^
+           (channel << 28U) ^
+           (rank << 24U) ^
+           (bank << 20U);
+}
+
+int memory_test_topology_pattern(DramModel *dram,
+                                 uint32_t base_pattern,
+                                 MemoryTestResult *result)
+{
+    const DramGeometry *geometry = dram_geometry(dram);
+    uint32_t channel = 0;
+    uint32_t rank = 0;
+    uint32_t bank = 0;
+    uint32_t column = 0x1000U;
+
+    if (result != NULL)
+    {
+        memory_test_result_init(result);
+    }
+
+    if (dram == NULL || geometry == NULL)
+    {
+        return -1;
+    }
+
+    if (column + sizeof(uint32_t) > geometry->row_size_bytes)
+    {
+        column = 0;
+    }
+
+    printf("[TEST] Topology-aware pattern test: base_pattern=0x%08X\n", base_pattern);
+
+    for (channel = 0; channel < geometry->channels; channel++)
+    {
+        for (rank = 0; rank < geometry->ranks_per_channel; rank++)
+        {
+            for (bank = 0; bank < geometry->banks_per_rank; bank++)
+            {
+                DramAddress dram_address;
+                uint32_t linear_address = 0;
+                uint32_t pattern = topology_pattern_for_location(base_pattern,
+                                                                 channel,
+                                                                 rank,
+                                                                 bank);
+
+                dram_address.channel = channel;
+                dram_address.rank = rank;
+                dram_address.bank = bank;
+                dram_address.row = 0;
+                dram_address.column = column;
+
+                if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
+                {
+                    printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
+                           channel,
+                           rank,
+                           bank);
+                    return -1;
+                }
+
+                printf("[TOPO][WRITE] CH%u RANK%u BANK%u addr=0x%08X pattern=0x%08X\n",
+                       channel,
+                       rank,
+                       bank,
+                       linear_address,
+                       pattern);
+
+                if (dram_write32(dram, linear_address, pattern) != 0)
+                {
+                    printf("[FAIL] topology write failed at addr=0x%08X\n", linear_address);
+                    return -1;
+                }
+            }
+        }
+    }
+
+    for (channel = 0; channel < geometry->channels; channel++)
+    {
+        for (rank = 0; rank < geometry->ranks_per_channel; rank++)
+        {
+            for (bank = 0; bank < geometry->banks_per_rank; bank++)
+            {
+                DramAddress dram_address;
+                uint32_t linear_address = 0;
+                uint32_t expected = topology_pattern_for_location(base_pattern,
+                                                                  channel,
+                                                                  rank,
+                                                                  bank);
+                uint32_t actual = 0;
+
+                dram_address.channel = channel;
+                dram_address.rank = rank;
+                dram_address.bank = bank;
+                dram_address.row = 0;
+                dram_address.column = column;
+
+                if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
+                {
+                    printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
+                           channel,
+                           rank,
+                           bank);
+                    return -1;
+                }
+
+                if (dram_read32(dram, linear_address, &actual) != 0)
+                {
+                    printf("[FAIL] topology read failed at addr=0x%08X\n", linear_address);
+                    return -1;
+                }
+
+                if (result != NULL)
+                {
+                    result->words_tested++;
+                }
+
+                if (actual != expected)
+                {
+                    printf("[TOPO][FAIL] CH%u RANK%u BANK%u addr=0x%08X expected=0x%08X actual=0x%08X\n",
+                           channel,
+                           rank,
+                           bank,
+                           linear_address,
+                           expected,
+                           actual);
+
+                    if (result != NULL)
+                    {
+                        if (result->error_count == 0)
+                        {
+                            result->first_fail_address = linear_address;
+                            result->first_expected = expected;
+                            result->first_actual = actual;
+                        }
+
+                        result->error_count++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (result != NULL && result->error_count > 0)
+    {
+        printf("[FAIL] topology-aware pattern test completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
+               result->words_tested,
+               result->error_count,
+               result->first_fail_address,
+               result->first_expected,
+               result->first_actual);
+        return -1;
+    }
+
+    if (result != NULL)
+    {
+        printf("[PASS] topology-aware pattern test completed: words=%zu errors=%zu\n",
+               result->words_tested,
+               result->error_count);
+    }
+    else
+    {
+        printf("[PASS] topology-aware pattern test completed\n");
+    }
+
+    return 0;
+}
