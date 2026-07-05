@@ -1,0 +1,23 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="540"
+        x:Class="DramViewer.MainWindow"
+        Title="DRAM Test Viewer" Width="960" Height="540">
+
+    <DockPanel Margin="12">
+        <!-- 상단: CSV 경로 + 불러오기 -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8">
+            <TextBox x:Name="PathBox" Width="430" Watermark="dram_test_results.csv 경로"/>
+            <Button Content="CSV 불러오기" Click="OnLoadClick"/>
+            <TextBlock x:Name="StatusText" VerticalAlignment="Center"
+                       Text="경로 확인 후 [CSV 불러오기]를 누르세요"/>
+        </StackPanel>
+
+        <!-- 테이블 헤더 + 행 목록 (고정폭 폰트로 열 맞춤) -->
+        <TextBlock x:Name="HeaderText" DockPanel.Dock="Top" Margin="0,12,0,4"
+                   FontFamily="Menlo,Consolas,monospace" FontSize="12" FontWeight="Bold"/>
+        <ListBox x:Name="RowsList" FontFamily="Menlo,Consolas,monospace" FontSize="12"/>
+    </DockPanel>
+</Window>
