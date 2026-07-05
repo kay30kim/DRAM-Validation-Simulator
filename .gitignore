@@ -7,6 +7,10 @@ dram_test
 uefi/ovmf/
 uefi/esp/
 
+# .NET (C# GUI)
+gui/**/bin/
+gui/**/obj/
+
 # etc
 venv/
 .venv/
