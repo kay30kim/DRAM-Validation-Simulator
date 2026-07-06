@@ -1,33 +1,33 @@
 CC = cc
 TARGET = dram_test
 
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -Icore
 DRAM_MB = 64
 
-OBJS = main.o dram_model.o memory_test.o logger.o error_injection.o
+OBJS = host/main.o core/dram_model.o core/memory_test.o host/logger.o core/error_injection.o
 
 all: $(TARGET)
 
-$(TARGET): main.o dram_model.o memory_test.o logger.o error_injection.o
-	$(CC) $(CFLAGS) main.o dram_model.o memory_test.o logger.o error_injection.o -o $(TARGET)
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET)
 
-main.o: main.c dram_model.h memory_test.h logger.h error_injection.h
-	$(CC) $(CFLAGS) -c main.c -o main.o
+host/main.o: host/main.c core/dram_model.h core/memory_test.h host/logger.h core/error_injection.h
+	$(CC) $(CFLAGS) -c host/main.c -o host/main.o
 
-dram_model.o: dram_model.c dram_model.h
-	$(CC) $(CFLAGS) -c dram_model.c -o dram_model.o
+core/dram_model.o: core/dram_model.c core/dram_model.h
+	$(CC) $(CFLAGS) -c core/dram_model.c -o core/dram_model.o
 
-memory_test.o: memory_test.c memory_test.h dram_model.h
-	$(CC) $(CFLAGS) -c memory_test.c -o memory_test.o
+core/memory_test.o: core/memory_test.c core/memory_test.h core/dram_model.h
+	$(CC) $(CFLAGS) -c core/memory_test.c -o core/memory_test.o
 
-logger.o: logger.c logger.h memory_test.h
-	$(CC) $(CFLAGS) -c logger.c -o logger.o
+host/logger.o: host/logger.c host/logger.h core/memory_test.h
+	$(CC) $(CFLAGS) -c host/logger.c -o host/logger.o
 
-error_injection.o: error_injection.c error_injection.h dram_model.h
-	$(CC) $(CFLAGS) -c error_injection.c -o error_injection.o
+core/error_injection.o: core/error_injection.c core/error_injection.h core/dram_model.h
+	$(CC) $(CFLAGS) -c core/error_injection.c -o core/error_injection.o
 
 run: all
 	./$(TARGET) $(DRAM_MB)
 
 clean:
-	rm -f $(TARGET) $(OBJS) dram_test_results.csv
+	rm -f $(OBJS) $(TARGET) dram_test_results.csv
