@@ -1,7 +1,7 @@
 #include "dram_model.h"
+#include "plat.h"
 
 #include <limits.h>
-#include <stdlib.h>
 #include <string.h>
 
 static int is_aligned32(uint32_t address)
@@ -108,7 +108,7 @@ int dram_init(DramModel *dram, size_t size_bytes)
         return -1;
     }
 
-    dram->data = (uint8_t *)calloc(size_bytes, sizeof(uint8_t));
+    dram->data = (uint8_t *)plat_alloc_zero(size_bytes);
     if (dram->data == NULL)
     {
         dram->size_bytes = 0;
@@ -127,7 +127,7 @@ void dram_free(DramModel *dram)
         return;
     }
 
-    free(dram->data);
+    plat_free(dram->data);
     dram->data = NULL;
     dram->size_bytes = 0;
     memset(&dram->geometry, 0, sizeof(dram->geometry));
