@@ -12,5 +12,6 @@
  */
 void *plat_alloc_zero(size_t bytes);
 void plat_free(void *ptr);
+void plat_puts(const char *s);
 
 #endif /* PLAT_H */

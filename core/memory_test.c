@@ -1,6 +1,6 @@
 #include "memory_test.h"
 
-#include <stdio.h>
+#include "dlog.h"
 
 static int is_aligned32(uint32_t address)
 {
@@ -42,26 +42,26 @@ int memory_test_constant_pattern(DramModel *dram,
 
     if (!is_aligned32(start_address) || (length_bytes % sizeof(uint32_t)) != 0U)
     {
-        printf("[FAIL] constant pattern test requires 4-byte aligned range\n");
+        dlog_printf("[FAIL] constant pattern test requires 4-byte aligned range\n");
         return -1;
     }
 
     if (!dram_is_valid_range(dram, start_address, length_bytes))
     {
-        printf("[FAIL] constant pattern test range is outside virtual DRAM\n");
+        dlog_printf("[FAIL] constant pattern test range is outside virtual DRAM\n");
         return -1;
     }
 
     end_address = start_address + (uint32_t)length_bytes;
 
-    printf("[TEST] Constant pattern test: start=0x%08X length=%zu pattern=0x%08X\n",
+    dlog_printf("[TEST] Constant pattern test: start=0x%08X length=%zu pattern=0x%08X\n",
            start_address, length_bytes, pattern);
 
     for (address = start_address; address < end_address; address += sizeof(uint32_t))
     {
         if (dram_write32(dram, address, pattern) != 0)
         {
-            printf("[FAIL] write failed at addr=0x%08X\n", address);
+            dlog_printf("[FAIL] write failed at addr=0x%08X\n", address);
             return -1;
         }
     }
@@ -72,7 +72,7 @@ int memory_test_constant_pattern(DramModel *dram,
 
         if (dram_read32(dram, address, &actual) != 0)
         {
-            printf("[FAIL] read failed at addr=0x%08X\n", address);
+            dlog_printf("[FAIL] read failed at addr=0x%08X\n", address);
             return -1;
         }
 
@@ -99,7 +99,7 @@ int memory_test_constant_pattern(DramModel *dram,
 
     if (result != NULL && result->error_count > 0)
     {
-        printf("[FAIL] constant pattern test completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
+        dlog_printf("[FAIL] constant pattern test completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
                result->words_tested,
                result->error_count,
                result->first_fail_address,
@@ -110,12 +110,12 @@ int memory_test_constant_pattern(DramModel *dram,
 
     if (result != NULL)
     {
-        printf("[PASS] constant pattern test completed: words=%zu errors=%zu\n",
+        dlog_printf("[PASS] constant pattern test completed: words=%zu errors=%zu\n",
                result->words_tested, result->error_count);
     }
     else
     {
-        printf("[PASS] constant pattern test completed\n");
+        dlog_printf("[PASS] constant pattern test completed\n");
     }
 
     return 0;
@@ -142,19 +142,19 @@ int memory_test_verify_constant_pattern(DramModel *dram,
 
     if (!is_aligned32(start_address) || (length_bytes % sizeof(uint32_t)) != 0U)
     {
-        printf("[FAIL] constant pattern verify requires 4-byte aligned range\n");
+        dlog_printf("[FAIL] constant pattern verify requires 4-byte aligned range\n");
         return -1;
     }
 
     if (!dram_is_valid_range(dram, start_address, length_bytes))
     {
-        printf("[FAIL] constant pattern verify range is outside virtual DRAM\n");
+        dlog_printf("[FAIL] constant pattern verify range is outside virtual DRAM\n");
         return -1;
     }
 
     end_address = start_address + (uint32_t)length_bytes;
 
-    printf("[TEST] Constant pattern verify: start=0x%08X length=%zu expected=0x%08X\n",
+    dlog_printf("[TEST] Constant pattern verify: start=0x%08X length=%zu expected=0x%08X\n",
            start_address,
            length_bytes,
            expected_pattern);
@@ -165,7 +165,7 @@ int memory_test_verify_constant_pattern(DramModel *dram,
 
         if (dram_read32(dram, address, &actual) != 0)
         {
-            printf("[FAIL] read failed at addr=0x%08X\n", address);
+            dlog_printf("[FAIL] read failed at addr=0x%08X\n", address);
             return -1;
         }
 
@@ -192,7 +192,7 @@ int memory_test_verify_constant_pattern(DramModel *dram,
 
     if (result != NULL && result->error_count > 0)
     {
-        printf("[FAIL] constant pattern verify completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
+        dlog_printf("[FAIL] constant pattern verify completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
                result->words_tested,
                result->error_count,
                result->first_fail_address,
@@ -203,13 +203,13 @@ int memory_test_verify_constant_pattern(DramModel *dram,
 
     if (result != NULL)
     {
-        printf("[PASS] constant pattern verify completed: words=%zu errors=%zu\n",
+        dlog_printf("[PASS] constant pattern verify completed: words=%zu errors=%zu\n",
                result->words_tested,
                result->error_count);
     }
     else
     {
-        printf("[PASS] constant pattern verify completed\n");
+        dlog_printf("[PASS] constant pattern verify completed\n");
     }
 
     return 0;
@@ -251,7 +251,7 @@ int memory_test_topology_pattern(DramModel *dram,
         column = 0;
     }
 
-    printf("[TEST] Topology-aware pattern test: base_pattern=0x%08X\n", base_pattern);
+    dlog_printf("[TEST] Topology-aware pattern test: base_pattern=0x%08X\n", base_pattern);
 
     for (channel = 0; channel < geometry->channels; channel++)
     {
@@ -274,14 +274,14 @@ int memory_test_topology_pattern(DramModel *dram,
 
                 if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
                 {
-                    printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
+                    dlog_printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
                            channel,
                            rank,
                            bank);
                     return -1;
                 }
 
-                printf("[TOPO][WRITE] CH%u RANK%u BANK%u addr=0x%08X pattern=0x%08X\n",
+                dlog_printf("[TOPO][WRITE] CH%u RANK%u BANK%u addr=0x%08X pattern=0x%08X\n",
                        channel,
                        rank,
                        bank,
@@ -290,7 +290,7 @@ int memory_test_topology_pattern(DramModel *dram,
 
                 if (dram_write32(dram, linear_address, pattern) != 0)
                 {
-                    printf("[FAIL] topology write failed at addr=0x%08X\n", linear_address);
+                    dlog_printf("[FAIL] topology write failed at addr=0x%08X\n", linear_address);
                     return -1;
                 }
             }
@@ -319,7 +319,7 @@ int memory_test_topology_pattern(DramModel *dram,
 
                 if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
                 {
-                    printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
+                    dlog_printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
                            channel,
                            rank,
                            bank);
@@ -328,7 +328,7 @@ int memory_test_topology_pattern(DramModel *dram,
 
                 if (dram_read32(dram, linear_address, &actual) != 0)
                 {
-                    printf("[FAIL] topology read failed at addr=0x%08X\n", linear_address);
+                    dlog_printf("[FAIL] topology read failed at addr=0x%08X\n", linear_address);
                     return -1;
                 }
 
@@ -339,7 +339,7 @@ int memory_test_topology_pattern(DramModel *dram,
 
                 if (actual != expected)
                 {
-                    printf("[TOPO][FAIL] CH%u RANK%u BANK%u addr=0x%08X expected=0x%08X actual=0x%08X\n",
+                    dlog_printf("[TOPO][FAIL] CH%u RANK%u BANK%u addr=0x%08X expected=0x%08X actual=0x%08X\n",
                            channel,
                            rank,
                            bank,
@@ -365,7 +365,7 @@ int memory_test_topology_pattern(DramModel *dram,
 
     if (result != NULL && result->error_count > 0)
     {
-        printf("[FAIL] topology-aware pattern test completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
+        dlog_printf("[FAIL] topology-aware pattern test completed: words=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
                result->words_tested,
                result->error_count,
                result->first_fail_address,
@@ -376,13 +376,13 @@ int memory_test_topology_pattern(DramModel *dram,
 
     if (result != NULL)
     {
-        printf("[PASS] topology-aware pattern test completed: words=%zu errors=%zu\n",
+        dlog_printf("[PASS] topology-aware pattern test completed: words=%zu errors=%zu\n",
                result->words_tested,
                result->error_count);
     }
     else
     {
-        printf("[PASS] topology-aware pattern test completed\n");
+        dlog_printf("[PASS] topology-aware pattern test completed\n");
     }
 
     return 0;
