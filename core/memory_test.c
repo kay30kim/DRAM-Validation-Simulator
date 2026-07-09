@@ -215,15 +215,13 @@ int memory_test_verify_constant_pattern(DramModel *dram,
     return 0;
 }
 
+/* 위치(BG/BA)마다 다른 패턴을 써서 주소 매핑 오류(aliasing)를 잡는다:
+ * 두 위치가 같은 셀로 겹치면 나중에 쓴 패턴이 먼저 쓴 것을 덮어 FAIL */
 static uint32_t topology_pattern_for_location(uint32_t base_pattern,
-                                              uint32_t channel,
-                                              uint32_t rank,
+                                              uint32_t bg,
                                               uint32_t bank)
 {
-    return base_pattern ^
-           (channel << 28U) ^
-           (rank << 24U) ^
-           (bank << 20U);
+    return base_pattern ^ (bg << 28U) ^ (bank << 24U);
 }
 
 int memory_test_topology_pattern(DramModel *dram,
@@ -231,10 +229,9 @@ int memory_test_topology_pattern(DramModel *dram,
                                  MemoryTestResult *result)
 {
     const DramGeometry *geometry = dram_geometry(dram);
-    uint32_t channel = 0;
-    uint32_t rank = 0;
+    uint32_t bg = 0;
     uint32_t bank = 0;
-    uint32_t column = 0x1000U;
+    uint32_t column = 0x200U;
 
     if (result != NULL)
     {
@@ -253,111 +250,89 @@ int memory_test_topology_pattern(DramModel *dram,
 
     dlog_printf("[TEST] Topology-aware pattern test: base_pattern=0x%08X\n", base_pattern);
 
-    for (channel = 0; channel < geometry->channels; channel++)
+    for (bg = 0; bg < geometry->bank_groups; bg++)
     {
-        for (rank = 0; rank < geometry->ranks_per_channel; rank++)
+        for (bank = 0; bank < geometry->banks_per_group; bank++)
         {
-            for (bank = 0; bank < geometry->banks_per_rank; bank++)
+            DramAddress dram_address;
+            uint32_t linear_address = 0;
+            uint32_t pattern = topology_pattern_for_location(base_pattern, bg, bank);
+
+            dram_address.bg = bg;
+            dram_address.bank = bank;
+            dram_address.row = 0;
+            dram_address.column = column;
+
+            if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
             {
-                DramAddress dram_address;
-                uint32_t linear_address = 0;
-                uint32_t pattern = topology_pattern_for_location(base_pattern,
-                                                                 channel,
-                                                                 rank,
-                                                                 bank);
+                dlog_printf("[FAIL] topology encode failed for BG%u BA%u\n", bg, bank);
+                return -1;
+            }
 
-                dram_address.channel = channel;
-                dram_address.rank = rank;
-                dram_address.bank = bank;
-                dram_address.row = 0;
-                dram_address.column = column;
+            dlog_printf("[TOPO][WRITE] BG%u BA%u addr=0x%08X pattern=0x%08X\n",
+                   bg,
+                   bank,
+                   linear_address,
+                   pattern);
 
-                if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
-                {
-                    dlog_printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
-                           channel,
-                           rank,
-                           bank);
-                    return -1;
-                }
-
-                dlog_printf("[TOPO][WRITE] CH%u RANK%u BANK%u addr=0x%08X pattern=0x%08X\n",
-                       channel,
-                       rank,
-                       bank,
-                       linear_address,
-                       pattern);
-
-                if (dram_write32(dram, linear_address, pattern) != 0)
-                {
-                    dlog_printf("[FAIL] topology write failed at addr=0x%08X\n", linear_address);
-                    return -1;
-                }
+            if (dram_write32(dram, linear_address, pattern) != 0)
+            {
+                dlog_printf("[FAIL] topology write failed at addr=0x%08X\n", linear_address);
+                return -1;
             }
         }
     }
 
-    for (channel = 0; channel < geometry->channels; channel++)
+    for (bg = 0; bg < geometry->bank_groups; bg++)
     {
-        for (rank = 0; rank < geometry->ranks_per_channel; rank++)
+        for (bank = 0; bank < geometry->banks_per_group; bank++)
         {
-            for (bank = 0; bank < geometry->banks_per_rank; bank++)
+            DramAddress dram_address;
+            uint32_t linear_address = 0;
+            uint32_t expected = topology_pattern_for_location(base_pattern, bg, bank);
+            uint32_t actual = 0;
+
+            dram_address.bg = bg;
+            dram_address.bank = bank;
+            dram_address.row = 0;
+            dram_address.column = column;
+
+            if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
             {
-                DramAddress dram_address;
-                uint32_t linear_address = 0;
-                uint32_t expected = topology_pattern_for_location(base_pattern,
-                                                                  channel,
-                                                                  rank,
-                                                                  bank);
-                uint32_t actual = 0;
+                dlog_printf("[FAIL] topology encode failed for BG%u BA%u\n", bg, bank);
+                return -1;
+            }
 
-                dram_address.channel = channel;
-                dram_address.rank = rank;
-                dram_address.bank = bank;
-                dram_address.row = 0;
-                dram_address.column = column;
+            if (dram_read32(dram, linear_address, &actual) != 0)
+            {
+                dlog_printf("[FAIL] topology read failed at addr=0x%08X\n", linear_address);
+                return -1;
+            }
 
-                if (dram_encode_address(dram, &dram_address, &linear_address) != 0)
-                {
-                    dlog_printf("[FAIL] topology encode failed for CH%u RANK%u BANK%u\n",
-                           channel,
-                           rank,
-                           bank);
-                    return -1;
-                }
+            if (result != NULL)
+            {
+                result->words_tested++;
+            }
 
-                if (dram_read32(dram, linear_address, &actual) != 0)
-                {
-                    dlog_printf("[FAIL] topology read failed at addr=0x%08X\n", linear_address);
-                    return -1;
-                }
+            if (actual != expected)
+            {
+                dlog_printf("[TOPO][FAIL] BG%u BA%u addr=0x%08X expected=0x%08X actual=0x%08X\n",
+                       bg,
+                       bank,
+                       linear_address,
+                       expected,
+                       actual);
 
                 if (result != NULL)
                 {
-                    result->words_tested++;
-                }
-
-                if (actual != expected)
-                {
-                    dlog_printf("[TOPO][FAIL] CH%u RANK%u BANK%u addr=0x%08X expected=0x%08X actual=0x%08X\n",
-                           channel,
-                           rank,
-                           bank,
-                           linear_address,
-                           expected,
-                           actual);
-
-                    if (result != NULL)
+                    if (result->error_count == 0)
                     {
-                        if (result->error_count == 0)
-                        {
-                            result->first_fail_address = linear_address;
-                            result->first_expected = expected;
-                            result->first_actual = actual;
-                        }
-
-                        result->error_count++;
+                        result->first_fail_address = linear_address;
+                        result->first_expected = expected;
+                        result->first_actual = actual;
                     }
+
+                    result->error_count++;
                 }
             }
         }
