@@ -6,29 +6,43 @@
 
 #define DRAM_MAX_FAULTS 32U
 
-#define DRAM_DEFAULT_CHANNELS 2U
-#define DRAM_DEFAULT_RANKS_PER_CHANNEL 1U
-#define DRAM_DEFAULT_BANKS_PER_RANK 4U
-#define DRAM_DEFAULT_ROW_SIZE_BYTES 8192U
+/*
+ * 주소 구성 근거: SK hynix DDR5 SDRAM 3DS RDIMM datasheet
+ * (HMCT04/14MEERAxxxN, 16Gb M-die, Rev 1.0) p.4 "Address Table"
+ *   - Bank Group : BG0~BG2  -> 8 groups
+ *   - Bank       : BA0~BA1  -> 4 banks / group
+ *   - Row        : R0~R15   -> 최대 65,536 rows
+ *   - Column     : C0~C9    -> 1KB page
+ *
+ * 주소 비트 배치 (LSB -> MSB): [ COL(10) | BA(2) | BG(3) | ROW ]
+ * 연속 접근이 1KB 페이지를 넘는 순간 뱅크/뱅크그룹으로 인터리브되는,
+ * 컨트롤러들이 흔히 쓰는 배치를 단순화한 것이다.
+ * ROW 비트 수는 호스트 메모리 제약 때문에 할당 크기에 맞춰 축소된다
+ * (스펙 상한 16비트).
+ */
+#define DRAM_SPEC_BG_BITS 3U
+#define DRAM_SPEC_BA_BITS 2U
+#define DRAM_SPEC_ROW_BITS 16U
+#define DRAM_SPEC_COL_BITS 10U
 
 typedef struct DramGeometry
 {
-    uint32_t channels;
-    uint32_t ranks_per_channel;
-    uint32_t banks_per_rank;
-    uint32_t row_size_bytes;
-    uint32_t rows_per_bank;
+    uint32_t bank_groups;     /* 8 (p.4) */
+    uint32_t banks_per_group; /* 4 (p.4) */
+    uint32_t rows_per_bank;   /* 1 << row_bits (모델링 값) */
+    uint32_t row_size_bytes;  /* 1024 = 1KB page (p.4) */
 
-    size_t bank_size_bytes;
-    size_t rank_size_bytes;
-    size_t channel_size_bytes;
+    uint32_t bg_bits;
+    uint32_t ba_bits;
+    uint32_t row_bits;
+    uint32_t col_bits;
+
     size_t modelled_size_bytes;
 } DramGeometry;
 
 typedef struct DramAddress
 {
-    uint32_t channel;
-    uint32_t rank;
+    uint32_t bg;
     uint32_t bank;
     uint32_t row;
     uint32_t column;
