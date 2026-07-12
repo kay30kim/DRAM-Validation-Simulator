@@ -25,4 +25,4 @@ int inject_stuck_at32(DramModel *dram,
                       uint32_t bit_mask,
                       FaultInjectionResult *result);
 
-#endif /* ERROR_INJECTION_H */
+#endif

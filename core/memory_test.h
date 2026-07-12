@@ -29,4 +29,4 @@ int memory_test_topology_pattern(DramModel *dram,
                                  uint32_t base_pattern,
                                  MemoryTestResult *result);
 
-#endif /* MEMORY_TEST_H */
+#endif

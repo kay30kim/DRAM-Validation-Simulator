@@ -26,4 +26,4 @@ int logger_log_memory_test(Logger *logger,
                            uint32_t pattern,
                            const MemoryTestResult *result);
 
-#endif /* LOGGER_H */
+#endif
