@@ -48,9 +48,19 @@ typedef struct DramAddress
     uint32_t column;
 } DramAddress;
 
+/* BIT_FLIP: 저장값 1회 반전, 덮어쓰면 사라짐(soft).
+ * STUCK_AT_x: 읽을 때마다 해당 비트 강제, 영구(hard). */
+typedef enum DramFaultType
+{
+    DRAM_FAULT_BIT_FLIP = 0,
+    DRAM_FAULT_STUCK_AT_0,
+    DRAM_FAULT_STUCK_AT_1
+} DramFaultType;
+
 typedef struct DramFault
 {
     int active;
+    DramFaultType type;
     uint32_t address;
     uint32_t bit_mask;
 } DramFault;
@@ -78,7 +88,12 @@ int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value);
 int dram_decode_address(const DramModel *dram, uint32_t address, DramAddress *decoded);
 int dram_encode_address(const DramModel *dram, const DramAddress *decoded, uint32_t *address);
 
-int dram_add_bit_flip_fault(DramModel *dram, uint32_t address, uint32_t bit_mask);
+int dram_inject_bit_flip(DramModel *dram, uint32_t address, uint32_t bit_mask);
+
+/* type은 STUCK_AT_0/1만 허용 */
+int dram_add_stuck_fault(DramModel *dram, DramFaultType type,
+                         uint32_t address, uint32_t bit_mask);
+
 void dram_clear_faults(DramModel *dram);
 size_t dram_fault_count(const DramModel *dram);
 

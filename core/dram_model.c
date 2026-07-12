@@ -55,10 +55,10 @@ static int dram_geometry_init(DramGeometry *geometry, size_t size_bytes)
     return 0;
 }
 
-static uint32_t apply_read_faults32(const DramModel *dram, uint32_t address, uint32_t value)
+static uint32_t apply_stuck_faults32(const DramModel *dram, uint32_t address, uint32_t value)
 {
     size_t index;
-    uint32_t faulted_value = value;
+    uint32_t sensed_value = value;
 
     if (dram == NULL)
     {
@@ -69,21 +69,22 @@ static uint32_t apply_read_faults32(const DramModel *dram, uint32_t address, uin
     {
         const DramFault *fault = &dram->faults[index];
 
-        if (fault->active && fault->address == address)
+        if (!fault->active || fault->address != address)
         {
-            faulted_value ^= fault->bit_mask;
+            continue;
+        }
+
+        if (fault->type == DRAM_FAULT_STUCK_AT_0)
+        {
+            sensed_value &= ~fault->bit_mask;
+        }
+        else if (fault->type == DRAM_FAULT_STUCK_AT_1)
+        {
+            sensed_value |= fault->bit_mask;
         }
     }
 
-    return faulted_value;
-}
-
-static uint32_t apply_write_faults32(const DramModel *dram, uint32_t address, uint32_t value)
-{
-    (void)dram;
-    (void)address;
-
-    return value;
+    return sensed_value;
 }
 
 int dram_init(DramModel *dram, size_t size_bytes)
@@ -183,8 +184,6 @@ int dram_is_valid_range(const DramModel *dram, uint32_t address, size_t length)
 
 int dram_write32(DramModel *dram, uint32_t address, uint32_t value)
 {
-    uint32_t stored_value = 0;
-
     if (!is_aligned32(address))
     {
         return -1;
@@ -195,8 +194,7 @@ int dram_write32(DramModel *dram, uint32_t address, uint32_t value)
         return -1;
     }
 
-    stored_value = apply_write_faults32(dram, address, value);
-    memcpy(&dram->data[address], &stored_value, sizeof(stored_value));
+    memcpy(&dram->data[address], &value, sizeof(value));
     return 0;
 }
 
@@ -220,7 +218,7 @@ int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value)
     }
 
     memcpy(&raw_value, &dram->data[address], sizeof(raw_value));
-    *out_value = apply_read_faults32(dram, address, raw_value);
+    *out_value = apply_stuck_faults32(dram, address, raw_value);
     return 0;
 }
 
@@ -298,11 +296,43 @@ int dram_encode_address(const DramModel *dram, const DramAddress *decoded, uint3
     return 0;
 }
 
-int dram_add_bit_flip_fault(DramModel *dram, uint32_t address, uint32_t bit_mask)
+int dram_inject_bit_flip(DramModel *dram, uint32_t address, uint32_t bit_mask)
+{
+    uint32_t stored_value = 0;
+
+    if (dram == NULL || bit_mask == 0)
+    {
+        return -1;
+    }
+
+    if (!is_aligned32(address))
+    {
+        return -1;
+    }
+
+    if (!dram_is_valid_range(dram, address, sizeof(uint32_t)))
+    {
+        return -1;
+    }
+
+    memcpy(&stored_value, &dram->data[address], sizeof(stored_value));
+    stored_value ^= bit_mask;
+    memcpy(&dram->data[address], &stored_value, sizeof(stored_value));
+
+    return 0;
+}
+
+int dram_add_stuck_fault(DramModel *dram, DramFaultType type,
+                         uint32_t address, uint32_t bit_mask)
 {
     DramFault *fault = NULL;
 
     if (dram == NULL || bit_mask == 0)
+    {
+        return -1;
+    }
+
+    if (type != DRAM_FAULT_STUCK_AT_0 && type != DRAM_FAULT_STUCK_AT_1)
     {
         return -1;
     }
@@ -324,6 +354,7 @@ int dram_add_bit_flip_fault(DramModel *dram, uint32_t address, uint32_t bit_mask
 
     fault = &dram->faults[dram->fault_count];
     fault->active = 1;
+    fault->type = type;
     fault->address = address;
     fault->bit_mask = bit_mask;
     dram->fault_count++;
