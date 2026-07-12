@@ -10,6 +10,7 @@ uefi/esp/
 # .NET (C# GUI)
 gui/**/bin/
 gui/**/obj/
+*.sln
 
 # etc
 venv/
