@@ -202,7 +202,9 @@ int main(int argc, char **argv)
     MemoryTestResult topology_result;
     MemoryTestResult pattern_result;
     MemoryTestResult verify_result;
+    MemoryTestResult stuck_result;
     FaultInjectionResult injection_result;
+    FaultInjectionResult stuck_injection;
     size_t dram_mb = 0;
     size_t dram_bytes = 0;
     uint32_t topology_pattern = 0xC3C3C3C3U;
@@ -214,11 +216,15 @@ int main(int argc, char **argv)
     uint32_t pattern = 0xAAAAAAAAU;
     uint32_t injected_address = 0x3000U;
     uint32_t injected_mask = 0x00000001U;
+    uint32_t stuck_address = 0x4000U;
+    uint32_t stuck_mask = 0x00000002U;
     int topology_pass = 0;
     int smoke_pass = 0;
     int pattern_pass = 0;
     int verify_pass = 0;
+    int stuck_pass = 0;
     int injected_fault_detected = 0;
+    int stuck_fault_detected = 0;
 
     if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
     {
@@ -345,6 +351,45 @@ int main(int argc, char **argv)
     }
 
     printf("[RESULT] PASS: injected bit flip was detected\n");
+
+    if (inject_stuck_at32(&dram,
+                          DRAM_FAULT_STUCK_AT_0,
+                          stuck_address,
+                          stuck_mask,
+                          &stuck_injection) != 0)
+    {
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    /* 영역 전체를 다시 쓰면 bit flip(soft)은 치유되지만,
+     * stuck-at(hard)은 재기록해도 읽을 때마다 다시 틀린다 */
+    stuck_pass = memory_test_constant_pattern(&dram,
+                                              pattern_start,
+                                              pattern_length,
+                                              pattern,
+                                              &stuck_result) == 0;
+    logger_log_memory_test(&logger,
+                           "constant_pattern_with_stuck_at_0",
+                           stuck_pass,
+                           pattern_start,
+                           pattern_length,
+                           pattern,
+                           &stuck_result);
+
+    stuck_fault_detected = !stuck_pass &&
+                           stuck_result.error_count > 0 &&
+                           stuck_result.first_fail_address == stuck_address;
+    if (!stuck_fault_detected)
+    {
+        printf("[RESULT] FAIL: stuck-at fault was not detected\n");
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    printf("[RESULT] PASS: stuck-at fault was detected (rewrite did not heal it)\n");
     dram_free(&dram);
     logger_close(&logger);
     printf("[DRAM] Virtual DRAM released\n");
