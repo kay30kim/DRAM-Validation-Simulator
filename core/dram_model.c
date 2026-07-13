@@ -1,4 +1,5 @@
 #include "dram_model.h"
+#include "odecc.h"
 #include "plat.h"
 
 #include <string.h>
@@ -55,36 +56,55 @@ static int dram_geometry_init(DramGeometry *geometry, size_t size_bytes)
     return 0;
 }
 
-static uint32_t apply_stuck_faults32(const DramModel *dram, uint32_t address, uint32_t value)
+// apply stuck-at faults to a codeword (data + parity) not directly in dram->data specific address
+static void apply_stuck_faults_codeword(const DramModel *dram, uint32_t cw_addr,
+                                        uint8_t data[ODECC_DATA_BYTES])
 {
     size_t index;
-    uint32_t sensed_value = value;
-
-    if (dram == NULL)
-    {
-        return value;
-    }
 
     for (index = 0; index < dram->fault_count; index++)
     {
         const DramFault *fault = &dram->faults[index];
+        uint32_t offset;
+        uint32_t word;
 
-        if (!fault->active || fault->address != address)
+        if (!fault->active ||
+            fault->address < cw_addr ||
+            fault->address >= cw_addr + ODECC_DATA_BYTES)
         {
             continue;
         }
 
+        offset = fault->address - cw_addr;
+        memcpy(&word, &data[offset], sizeof(word));
+
         if (fault->type == DRAM_FAULT_STUCK_AT_0)
         {
-            sensed_value &= ~fault->bit_mask;
+            word &= ~fault->bit_mask;
         }
         else if (fault->type == DRAM_FAULT_STUCK_AT_1)
         {
-            sensed_value |= fault->bit_mask;
+            word |= fault->bit_mask;
         }
-    }
 
-    return sensed_value;
+        memcpy(&data[offset], &word, sizeof(word));
+    }
+}
+
+// Sense amplifier에 올라온거 가져온거 = raw 셀 + stuck-at 강제까지 반영된 코드워드를 꺼낸다 (ECC 디코드 전 상태)
+static void load_codeword(const DramModel *dram, uint32_t cw_addr,
+                          uint8_t data[ODECC_DATA_BYTES])
+{
+    memcpy(data, &dram->data[cw_addr], ODECC_DATA_BYTES);
+    apply_stuck_faults_codeword(dram, cw_addr, data);
+}
+
+// Data + ECC parity를 dram->data와 dram->parity에 저장. ECC는 odecc_encode로 계산
+static void store_codeword(DramModel *dram, uint32_t cw_addr,
+                           const uint8_t data[ODECC_DATA_BYTES])
+{
+    memcpy(&dram->data[cw_addr], data, ODECC_DATA_BYTES);
+    dram->parity[cw_addr / ODECC_DATA_BYTES] = odecc_encode(data);
 }
 
 int dram_init(DramModel *dram, size_t size_bytes)
@@ -108,8 +128,17 @@ int dram_init(DramModel *dram, size_t size_bytes)
         return -1;
     }
 
+    dram->parity = (uint8_t *)plat_alloc_zero(size_bytes / ODECC_DATA_BYTES);
+    if (dram->parity == NULL)
+    {
+        plat_free(dram->data);
+        dram->data = NULL;
+        return -1;
+    }
+
     dram->size_bytes = size_bytes;
     dram->fault_count = 0;
+    dram->odecc_enabled = 1;
     return 0;
 }
 
@@ -121,10 +150,13 @@ void dram_free(DramModel *dram)
     }
 
     plat_free(dram->data);
+    plat_free(dram->parity);
     dram->data = NULL;
+    dram->parity = NULL;
     dram->size_bytes = 0;
     memset(&dram->geometry, 0, sizeof(dram->geometry));
     dram_clear_faults(dram);
+    dram_reset_ecc_stats(dram);
 }
 
 size_t dram_size_bytes(const DramModel *dram)
@@ -182,8 +214,14 @@ int dram_is_valid_range(const DramModel *dram, uint32_t address, size_t length)
     return 1;
 }
 
+/* 쓰기 = 코드워드 단위 read(load_codeword)-modify(odecc_decode)-write(store_codeword) 후 패리티 재계산.
+ * RMW 과정의 정정은 통계(DramModule.ecc_corr_count)에 넣지 않는다 (읽기시에만 집계) */
 int dram_write32(DramModel *dram, uint32_t address, uint32_t value)
 {
+    uint8_t codeword[ODECC_DATA_BYTES];
+    uint8_t parity;
+    uint32_t cw_addr;
+
     if (!is_aligned32(address))
     {
         return -1;
@@ -194,13 +232,29 @@ int dram_write32(DramModel *dram, uint32_t address, uint32_t value)
         return -1;
     }
 
-    memcpy(&dram->data[address], &value, sizeof(value));
+    cw_addr = address & ~(uint32_t)(ODECC_DATA_BYTES - 1U); // & ~15 = & 0b11111111111111111111111111110000 => 16배수
+    load_codeword(dram, cw_addr, codeword);
+    parity = dram->parity[cw_addr / ODECC_DATA_BYTES];
+
+    if (dram->odecc_enabled)
+    {
+        OdeccResult ecc;
+        // codword 꺼낼때 기존 데이터에 fault있으면 ECC 디코드로 정정
+        odecc_decode(codeword, &parity, &ecc);
+    }
+
+    memcpy(&codeword[address - cw_addr], &value, sizeof(value));
+    store_codeword(dram, cw_addr, codeword);
     return 0;
 }
 
-int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value)
+// 읽기 = raw 셀 -> stuck-at 강제 -> ECC 디코드(1비트 정정) -> 워드 반환.
+// Error Colleciton : 1비트 정정이면 ecc_corr_count++, 신드롬 미할당(다중 오류 검출)이면 uncorr++ 기록만 되고 -> return 값은 정상 Read
+int dram_read32(DramModel *dram, uint32_t address, uint32_t *out_value)
 {
-    uint32_t raw_value = 0;
+    uint8_t codeword[ODECC_DATA_BYTES];
+    uint8_t parity;
+    uint32_t cw_addr;
 
     if (out_value == NULL)
     {
@@ -217,8 +271,27 @@ int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value)
         return -1;
     }
 
-    memcpy(&raw_value, &dram->data[address], sizeof(raw_value));
-    *out_value = apply_stuck_faults32(dram, address, raw_value);
+    cw_addr = address & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
+    load_codeword(dram, cw_addr, codeword);
+    parity = dram->parity[cw_addr / ODECC_DATA_BYTES];
+
+    if (dram->odecc_enabled)
+    {
+        OdeccResult ecc;
+        int rc = odecc_decode(codeword, &parity, &ecc);
+
+        if (rc == ODECC_CORRECTED)
+        {
+            dram->ecc_corr_count++;
+            dram->ecc_last_corr_addr = cw_addr;
+        }
+        else if (rc == ODECC_UNCORRECTABLE)
+        {
+            dram->ecc_uncorr_count++;
+        }
+    }
+
+    memcpy(out_value, &codeword[address - cw_addr], sizeof(*out_value));
     return 0;
 }
 
@@ -381,4 +454,31 @@ size_t dram_fault_count(const DramModel *dram)
     }
 
     return dram->fault_count;
+}
+
+size_t dram_ecc_correction_count(const DramModel *dram)
+{
+    return (dram == NULL) ? 0 : dram->ecc_corr_count;
+}
+
+size_t dram_ecc_uncorrectable_count(const DramModel *dram)
+{
+    return (dram == NULL) ? 0 : dram->ecc_uncorr_count;
+}
+
+uint32_t dram_ecc_last_corrected_addr(const DramModel *dram)
+{
+    return (dram == NULL) ? 0 : dram->ecc_last_corr_addr;
+}
+
+void dram_reset_ecc_stats(DramModel *dram)
+{
+    if (dram == NULL)
+    {
+        return;
+    }
+
+    dram->ecc_corr_count = 0;
+    dram->ecc_uncorr_count = 0;
+    dram->ecc_last_corr_addr = 0;
 }

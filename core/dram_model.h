@@ -68,10 +68,17 @@ typedef struct DramFault
 typedef struct DramModel
 {
     uint8_t *data;
+    uint8_t *parity;
     size_t size_bytes;
     DramGeometry geometry;
     DramFault faults[DRAM_MAX_FAULTS];
     size_t fault_count;
+
+    /* ECC transparency: 정정은 읽기에서 투명하게 일어나고 통계로만 보인다 */
+    int odecc_enabled;
+    size_t ecc_corr_count;
+    size_t ecc_uncorr_count;
+    uint32_t ecc_last_corr_addr;
 } DramModel;
 
 int dram_init(DramModel *dram, size_t size_bytes);
@@ -83,7 +90,8 @@ int dram_is_initialized(const DramModel *dram);
 
 int dram_is_valid_range(const DramModel *dram, uint32_t address, size_t length);
 int dram_write32(DramModel *dram, uint32_t address, uint32_t value);
-int dram_read32(const DramModel *dram, uint32_t address, uint32_t *out_value);
+/* 읽기가 ECC 정정 통계를 갱신하므로 const가 아니다 */
+int dram_read32(DramModel *dram, uint32_t address, uint32_t *out_value);
 
 int dram_decode_address(const DramModel *dram, uint32_t address, DramAddress *decoded);
 int dram_encode_address(const DramModel *dram, const DramAddress *decoded, uint32_t *address);
@@ -97,4 +105,9 @@ int dram_add_stuck_fault(DramModel *dram, DramFaultType type,
 void dram_clear_faults(DramModel *dram);
 size_t dram_fault_count(const DramModel *dram);
 
-#endif /* DRAM_MODEL_H */
+size_t dram_ecc_correction_count(const DramModel *dram);
+size_t dram_ecc_uncorrectable_count(const DramModel *dram);
+uint32_t dram_ecc_last_corrected_addr(const DramModel *dram);
+void dram_reset_ecc_stats(DramModel *dram);
+
+#endif
