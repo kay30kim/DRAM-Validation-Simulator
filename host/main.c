@@ -223,8 +223,9 @@ int main(int argc, char **argv)
     int pattern_pass = 0;
     int verify_pass = 0;
     int stuck_pass = 0;
-    int injected_fault_detected = 0;
-    int stuck_fault_detected = 0;
+    int bitflip_escaped = 0;
+    int stuck_escaped = 0;
+    DramAddress corr_location;
 
     if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
     {
@@ -318,6 +319,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    dram_reset_ecc_stats(&dram);
+
     if (inject_bit_flip32(&dram,
                           injected_address,
                           injected_mask,
@@ -341,16 +344,30 @@ int main(int argc, char **argv)
                            pattern,
                            &verify_result);
 
-    injected_fault_detected = !verify_pass && verify_result.error_count > 0;
-    if (!injected_fault_detected)
+    /* 커밋 5까지는 FAIL 검출이 기대값이었지만, ECC가 생긴 지금은
+     * "오염됐는데도 테스트가 통과하는 것"이 기대값이다 (escape) */
+    bitflip_escaped = verify_pass &&
+                      verify_result.error_count == 0 &&
+                      dram_ecc_correction_count(&dram) > 0;
+    if (!bitflip_escaped)
     {
-        printf("[RESULT] FAIL: injected fault was not detected\n");
+        printf("[RESULT] FAIL: expected On-Die ECC escape did not happen\n");
         dram_free(&dram);
         logger_close(&logger);
         return 1;
     }
 
-    printf("[RESULT] PASS: injected bit flip was detected\n");
+    dram_decode_address(&dram, dram_ecc_last_corrected_addr(&dram), &corr_location);
+    printf("[ECC ] hidden correction at 0x%08X (BG%u BA%u ROW%u COL%u), corrections=%zu\n",
+           dram_ecc_last_corrected_addr(&dram),
+           corr_location.bg,
+           corr_location.bank,
+           corr_location.row,
+           corr_location.column,
+           dram_ecc_correction_count(&dram));
+    printf("[RESULT] PASS: single-bit fault escaped the test (masked by On-Die ECC)\n");
+
+    dram_reset_ecc_stats(&dram);
 
     if (inject_stuck_at32(&dram,
                           DRAM_FAULT_STUCK_AT_0,
@@ -363,8 +380,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* 영역 전체를 다시 쓰면 bit flip(soft)은 치유되지만,
-     * stuck-at(hard)은 재기록해도 읽을 때마다 다시 틀린다 */
+    /* ECC가 있으면 hard fault(stuck-at)조차 패턴 테스트를 통과해버린다 */
     stuck_pass = memory_test_constant_pattern(&dram,
                                               pattern_start,
                                               pattern_length,
@@ -378,18 +394,20 @@ int main(int argc, char **argv)
                            pattern,
                            &stuck_result);
 
-    stuck_fault_detected = !stuck_pass &&
-                           stuck_result.error_count > 0 &&
-                           stuck_result.first_fail_address == stuck_address;
-    if (!stuck_fault_detected)
+    stuck_escaped = stuck_pass &&
+                    stuck_result.error_count == 0 &&
+                    dram_ecc_correction_count(&dram) > 0;
+    if (!stuck_escaped)
     {
-        printf("[RESULT] FAIL: stuck-at fault was not detected\n");
+        printf("[RESULT] FAIL: expected On-Die ECC escape did not happen for stuck-at\n");
         dram_free(&dram);
         logger_close(&logger);
         return 1;
     }
 
-    printf("[RESULT] PASS: stuck-at fault was detected (rewrite did not heal it)\n");
+    printf("[ECC ] corrections=%zu (stuck-at is re-corrected on every read, not healed)\n",
+           dram_ecc_correction_count(&dram));
+    printf("[RESULT] PASS: stuck-at fault also escaped the test (hidden hard fault)\n");
     dram_free(&dram);
     logger_close(&logger);
     printf("[DRAM] Virtual DRAM released\n");
