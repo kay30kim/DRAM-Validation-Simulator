@@ -1,3 +1,6 @@
+// 호스트 데모: DDR5 스펙 기반 검증 시나리오 모음.
+// main()은 목차 역할만 하고, 각 시나리오(tcN)는 자기 안에서
+// Arrange(상황 제조) / Act(측정) / Assert(판정)를 끝낸다.
 #include "dram_model.h"
 #include "error_injection.h"
 #include "logger.h"
@@ -11,6 +14,19 @@
 #define DEFAULT_DRAM_MB 64U
 #define BYTES_PER_MB (1024U * 1024U)
 #define TEST_LOG_PATH "dram_test_results.csv"
+
+#define SMOKE_ADDR 0x1000U
+#define SMOKE_PATTERN 0xA5A5A5A5U
+#define TOPO_PATTERN 0xC3C3C3C3U
+#define REGION_START 0x2000U
+#define REGION_LEN (64U * 1024U)
+#define REGION_PATTERN 0xAAAAAAAAU
+#define BITFLIP_ADDR 0x3000U
+#define BITFLIP_MASK 0x00000001U
+#define STUCK_ADDR 0x4000U
+#define STUCK_MASK 0x00000002U
+#define SOFT_ADDR 0x5000U
+#define SOFT_MASK 0x00000010U
 
 #define SCRUB_LOG_MAX 8U
 
@@ -68,6 +84,19 @@ static void scrub_report(void *ctx, uint32_t cw_addr, uint32_t bit_index,
            bit_index);
 }
 
+static void log_scrub_summary(Logger *logger, const char *name,
+                              const ScrubLog *log, size_t events)
+{
+    MemoryTestResult summary;
+
+    memory_test_result_init(&summary);
+    summary.words_tested = REGION_LEN / ODECC_DATA_BYTES;
+    summary.error_count = events;
+    summary.first_fail_address = (log->count > 0) ? log->addrs[0] : 0;
+    logger_log_memory_test(logger, name, 1, REGION_START, REGION_LEN,
+                           REGION_PATTERN, &summary);
+}
+
 static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
 {
     char *endptr = NULL;
@@ -95,7 +124,6 @@ static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
     return 0;
 }
 
-
 static void print_dram_geometry(const DramModel *dram)
 {
     const DramGeometry *geometry = dram_geometry(dram);
@@ -118,7 +146,6 @@ static void print_dram_geometry(const DramModel *dram)
            geometry->modelled_size_bytes,
            DRAM_SPEC_ROW_BITS);
 }
-
 
 static void print_decoded_address(uint32_t address, const DramAddress *decoded)
 {
@@ -148,11 +175,12 @@ static int dram_address_equals(const DramAddress *left, const DramAddress *right
            left->column == right->column;
 }
 
-static int run_address_decode_smoke_test(const DramModel *dram)
+// TC1. 주소 인코드/디코드 라운드트립 (datasheet p.4 Address Table)
+static int tc1_address_decode(const DramModel *dram)
 {
     const DramGeometry *geometry = dram_geometry(dram);
-    uint32_t bg = 0;
-    uint32_t bank = 0;
+    uint32_t bg;
+    uint32_t bank;
     size_t probes = 0;
 
     if (geometry == NULL)
@@ -162,6 +190,7 @@ static int run_address_decode_smoke_test(const DramModel *dram)
 
     printf("[TEST] Address decode/encode smoke test\n");
 
+    // Act + Assert: 모든 BG/BA 조합을 왕복시켜 원본과 일치하는지 확인
     for (bg = 0; bg < geometry->bank_groups; bg++)
     {
         for (bank = 0; bank < geometry->banks_per_group; bank++)
@@ -208,46 +237,211 @@ static int run_address_decode_smoke_test(const DramModel *dram)
     return 0;
 }
 
-static int run_basic_rw_smoke_test(DramModel *dram,
-                                   uint32_t address,
-                                   uint32_t expected,
-                                   uint32_t *out_actual)
+// TC2. 위치(BG/BA)별 고유 패턴으로 주소 매핑 aliasing 검사
+static int tc2_topology_pattern(DramModel *dram, Logger *logger)
+{
+    MemoryTestResult result;
+    int pass;
+
+    // Act
+    pass = memory_test_topology_pattern(dram, TOPO_PATTERN, &result) == 0;
+
+    logger_log_memory_test(logger, "topology_pattern", pass, 0U,
+                           result.words_tested * sizeof(uint32_t),
+                           TOPO_PATTERN, &result);
+
+    // Assert
+    return pass ? 0 : -1;
+}
+
+// TC3. 32비트 read/write 기본 동작
+static int tc3_basic_rw(DramModel *dram, Logger *logger)
 {
     uint32_t actual = 0;
+    int pass = 0;
 
     printf("[TEST] Basic 32-bit read/write smoke test\n");
 
-    if (out_actual != NULL)
+    // Act
+    if (dram_write32(dram, SMOKE_ADDR, SMOKE_PATTERN) != 0)
     {
-        *out_actual = 0;
+        printf("[FAIL] write failed at addr=0x%08X\n", SMOKE_ADDR);
     }
-
-    if (dram_write32(dram, address, expected) != 0)
+    else if (dram_read32(dram, SMOKE_ADDR, &actual) != 0)
     {
-        printf("[FAIL] write failed at addr=0x%08X\n", address);
-        return -1;
+        printf("[FAIL] read failed at addr=0x%08X\n", SMOKE_ADDR);
     }
-
-    if (dram_read32(dram, address, &actual) != 0)
-    {
-        printf("[FAIL] read failed at addr=0x%08X\n", address);
-        return -1;
-    }
-
-    if (out_actual != NULL)
-    {
-        *out_actual = actual;
-    }
-
-    if (actual != expected)
+    else if (actual != SMOKE_PATTERN)
     {
         printf("[FAIL] addr=0x%08X expected=0x%08X actual=0x%08X\n",
-               address, expected, actual);
+               SMOKE_ADDR, SMOKE_PATTERN, actual);
+    }
+    else
+    {
+        printf("[PASS] addr=0x%08X expected=0x%08X actual=0x%08X\n",
+               SMOKE_ADDR, SMOKE_PATTERN, actual);
+        pass = 1;
+    }
+
+    logger_log_smoke_test(logger, "basic_rw_smoke", pass, SMOKE_ADDR,
+                          SMOKE_PATTERN, actual);
+
+    // Assert
+    return pass ? 0 : -1;
+}
+
+// TC4. 결함 없는 베이스라인: 채운 패턴이 그대로 읽혀야 한다
+static int tc4_constant_pattern(DramModel *dram, Logger *logger)
+{
+    MemoryTestResult result;
+    int pass;
+
+    // Act
+    pass = memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
+                                        REGION_PATTERN, &result) == 0;
+
+    logger_log_memory_test(logger, "constant_pattern", pass, REGION_START,
+                           REGION_LEN, REGION_PATTERN, &result);
+
+    // Assert
+    return pass ? 0 : -1;
+}
+
+// TC5. On-Die ECC escape: 1비트 결함이 정정돼 테스트가 "통과"해버린다
+static int tc5_odecc_escape(DramModel *dram, Logger *logger)
+{
+    FaultInjectionResult injection;
+    MemoryTestResult result;
+    DramAddress location;
+    int verify_pass;
+    int escaped;
+
+    // Arrange: 정정 통계를 0으로 만들고 soft error 1비트 주입
+    dram_reset_ecc_stats(dram);
+    if (inject_bit_flip32(dram, BITFLIP_ADDR, BITFLIP_MASK, &injection) != 0)
+    {
         return -1;
     }
 
-    printf("[PASS] addr=0x%08X expected=0x%08X actual=0x%08X\n",
-           address, expected, actual);
+    // Act: 오염된 영역을 패턴 verify
+    verify_pass = memory_test_verify_constant_pattern(dram, REGION_START,
+                                                      REGION_LEN,
+                                                      REGION_PATTERN,
+                                                      &result) == 0;
+    logger_log_memory_test(logger, "constant_pattern_after_bit_flip",
+                           verify_pass, REGION_START, REGION_LEN,
+                           REGION_PATTERN, &result);
+
+    // Assert: PASS인데 정정 흔적이 남아 있어야 escape 재현 성공
+    escaped = verify_pass &&
+              result.error_count == 0 &&
+              dram_ecc_correction_count(dram) > 0;
+    if (!escaped)
+    {
+        printf("[RESULT] FAIL: expected On-Die ECC escape did not happen\n");
+        return -1;
+    }
+
+    dram_decode_address(dram, dram_ecc_last_corrected_addr(dram), &location);
+    printf("[ECC ] hidden correction at 0x%08X (BG%u BA%u ROW%u COL%u), corrections=%zu\n",
+           dram_ecc_last_corrected_addr(dram),
+           location.bg,
+           location.bank,
+           location.row,
+           location.column,
+           dram_ecc_correction_count(dram));
+    printf("[RESULT] PASS: single-bit fault escaped the test (masked by On-Die ECC)\n");
+    return 0;
+}
+
+// TC6. stuck-at escape: hard fault조차 패턴 테스트를 통과해버린다
+static int tc6_stuck_escape(DramModel *dram, Logger *logger)
+{
+    FaultInjectionResult injection;
+    MemoryTestResult result;
+    int pass;
+    int escaped;
+
+    // Arrange
+    dram_reset_ecc_stats(dram);
+    if (inject_stuck_at32(dram, DRAM_FAULT_STUCK_AT_0, STUCK_ADDR, STUCK_MASK,
+                          &injection) != 0)
+    {
+        return -1;
+    }
+
+    // Act: 전체 재기록+verify. TC5의 soft는 이때 치유되고 stuck만 남는다
+    pass = memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
+                                        REGION_PATTERN, &result) == 0;
+    logger_log_memory_test(logger, "constant_pattern_with_stuck_at_0", pass,
+                           REGION_START, REGION_LEN, REGION_PATTERN, &result);
+
+    // Assert
+    escaped = pass &&
+              result.error_count == 0 &&
+              dram_ecc_correction_count(dram) > 0;
+    if (!escaped)
+    {
+        printf("[RESULT] FAIL: expected On-Die ECC escape did not happen for stuck-at\n");
+        return -1;
+    }
+
+    printf("[ECC ] corrections=%zu (stuck-at is re-corrected on every read, not healed)\n",
+           dram_ecc_correction_count(dram));
+    printf("[RESULT] PASS: stuck-at fault also escaped the test (hidden hard fault)\n");
+    return 0;
+}
+
+// TC7. scrub 스크린: 반복 scrub으로 soft(치유됨)와 hard(재발)를 분류
+static int tc7_scrub_screen(DramModel *dram, Logger *logger)
+{
+    FaultInjectionResult injection;
+    ScrubLog pass1_log;
+    ScrubLog pass2_log;
+    size_t pass1_events;
+    size_t pass2_events;
+    uint32_t stuck_cw = STUCK_ADDR & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
+    uint32_t soft_cw = SOFT_ADDR & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
+    int screen_ok;
+
+    // Arrange: hard(stuck)는 TC6에서 생존 중. soft를 추가해 두 종류를 공존시킨다
+    if (inject_bit_flip32(dram, SOFT_ADDR, SOFT_MASK, &injection) != 0)
+    {
+        return -1;
+    }
+
+    // Act 1: scrub 1회차 - 오류를 찾아 정정값을 재기록(치유 시도)
+    printf("[TEST] Scrub pass #1: scan every codeword, correct and write back\n");
+    scrub_log_init(&pass1_log, dram, "pass1");
+    pass1_events = dram_scrub_range(dram, REGION_START, REGION_LEN,
+                                    scrub_report, &pass1_log);
+    printf("[SCRUB] pass #1 done: events=%zu\n", pass1_events);
+    log_scrub_summary(logger, "scrub_pass1", &pass1_log, pass1_events);
+
+    // Act 2: scrub 2회차 - 재기록으로 안 나은 놈(hard)만 다시 나타난다
+    printf("[TEST] Scrub pass #2: repeat - only hard faults should reappear\n");
+    scrub_log_init(&pass2_log, dram, "pass2");
+    pass2_events = dram_scrub_range(dram, REGION_START, REGION_LEN,
+                                    scrub_report, &pass2_log);
+    printf("[SCRUB] pass #2 done: events=%zu\n", pass2_events);
+    log_scrub_summary(logger, "scrub_pass2", &pass2_log, pass2_events);
+
+    // Assert: 1회차 2건(soft+hard), 2회차엔 stuck 자리 1건만 재발해야 한다
+    screen_ok = (pass1_events == 2) &&
+                (pass2_events == 1) &&
+                (pass2_log.count == 1) &&
+                (pass2_log.addrs[0] == stuck_cw);
+    if (!screen_ok)
+    {
+        printf("[RESULT] FAIL: scrub screen did not classify faults as expected\n");
+        return -1;
+    }
+
+    printf("[SCREEN] 0x%08X: corrected once, gone after rewrite -> SOFT error (healed)\n",
+           soft_cw);
+    printf("[SCREEN] 0x%08X: reappeared after rewrite -> HARD fault candidate (screen out)\n",
+           stuck_cw);
+    printf("[RESULT] PASS: repeated scrub separated soft error from hard fault\n");
     return 0;
 }
 
@@ -255,44 +449,8 @@ int main(int argc, char **argv)
 {
     DramModel dram;
     Logger logger;
-    MemoryTestResult topology_result;
-    MemoryTestResult pattern_result;
-    MemoryTestResult verify_result;
-    MemoryTestResult stuck_result;
-    FaultInjectionResult injection_result;
-    FaultInjectionResult stuck_injection;
     size_t dram_mb = 0;
     size_t dram_bytes = 0;
-    uint32_t topology_pattern = 0xC3C3C3C3U;
-    uint32_t smoke_address = 0x1000U;
-    uint32_t smoke_expected = 0xA5A5A5A5U;
-    uint32_t smoke_actual = 0;
-    uint32_t pattern_start = 0x2000U;
-    size_t pattern_length = 64U * 1024U;
-    uint32_t pattern = 0xAAAAAAAAU;
-    uint32_t injected_address = 0x3000U;
-    uint32_t injected_mask = 0x00000001U;
-    uint32_t stuck_address = 0x4000U;
-    uint32_t stuck_mask = 0x00000002U;
-    uint32_t soft_address = 0x5000U;
-    uint32_t soft_mask = 0x00000010U;
-    int topology_pass = 0;
-    int smoke_pass = 0;
-    int pattern_pass = 0;
-    int verify_pass = 0;
-    int stuck_pass = 0;
-    int bitflip_escaped = 0;
-    int stuck_escaped = 0;
-    int screen_ok = 0;
-    DramAddress corr_location;
-    FaultInjectionResult soft_injection;
-    MemoryTestResult scrub_summary;
-    ScrubLog scrub1;
-    ScrubLog scrub2;
-    size_t scrub1_events = 0;
-    size_t scrub2_events = 0;
-    uint32_t stuck_cw = 0;
-    uint32_t soft_cw = 0;
 
     if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
     {
@@ -323,214 +481,19 @@ int main(int argc, char **argv)
     printf("[DRAM] Virtual DRAM initialized: %zu bytes\n", dram_size_bytes(&dram));
     print_dram_geometry(&dram);
 
-    if (run_address_decode_smoke_test(&dram) != 0)
+    // 시나리오 목차: 하나라도 실패하면 즉시 중단
+    if (tc1_address_decode(&dram) != 0 ||
+        tc2_topology_pattern(&dram, &logger) != 0 ||
+        tc3_basic_rw(&dram, &logger) != 0 ||
+        tc4_constant_pattern(&dram, &logger) != 0 ||
+        tc5_odecc_escape(&dram, &logger) != 0 ||
+        tc6_stuck_escape(&dram, &logger) != 0 ||
+        tc7_scrub_screen(&dram, &logger) != 0)
     {
         dram_free(&dram);
         logger_close(&logger);
         return 1;
     }
-
-    topology_pass = memory_test_topology_pattern(&dram,
-                                                  topology_pattern,
-                                                  &topology_result) == 0;
-    logger_log_memory_test(&logger,
-                           "topology_pattern",
-                           topology_pass,
-                           0U,
-                           topology_result.words_tested * sizeof(uint32_t),
-                           topology_pattern,
-                           &topology_result);
-
-    if (!topology_pass)
-    {
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    smoke_pass = run_basic_rw_smoke_test(&dram,
-                                         smoke_address,
-                                         smoke_expected,
-                                         &smoke_actual) == 0;
-    logger_log_smoke_test(&logger,
-                          "basic_rw_smoke",
-                          smoke_pass,
-                          smoke_address,
-                          smoke_expected,
-                          smoke_actual);
-
-    if (!smoke_pass)
-    {
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    pattern_pass = memory_test_constant_pattern(&dram,
-                                                pattern_start,
-                                                pattern_length,
-                                                pattern,
-                                                &pattern_result) == 0;
-    logger_log_memory_test(&logger,
-                           "constant_pattern",
-                           pattern_pass,
-                           pattern_start,
-                           pattern_length,
-                           pattern,
-                           &pattern_result);
-
-    if (!pattern_pass)
-    {
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    dram_reset_ecc_stats(&dram);
-
-    if (inject_bit_flip32(&dram,
-                          injected_address,
-                          injected_mask,
-                          &injection_result) != 0)
-    {
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    verify_pass = memory_test_verify_constant_pattern(&dram,
-                                                      pattern_start,
-                                                      pattern_length,
-                                                      pattern,
-                                                      &verify_result) == 0;
-    logger_log_memory_test(&logger,
-                           "constant_pattern_after_bit_flip",
-                           verify_pass,
-                           pattern_start,
-                           pattern_length,
-                           pattern,
-                           &verify_result);
-
-    /* 커밋 5까지는 FAIL 검출이 기대값이었지만, ECC가 생긴 지금은
-     * "오염됐는데도 테스트가 통과하는 것"이 기대값이다 (escape) */
-    bitflip_escaped = verify_pass &&
-                      verify_result.error_count == 0 &&
-                      dram_ecc_correction_count(&dram) > 0;
-    if (!bitflip_escaped)
-    {
-        printf("[RESULT] FAIL: expected On-Die ECC escape did not happen\n");
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    dram_decode_address(&dram, dram_ecc_last_corrected_addr(&dram), &corr_location);
-    printf("[ECC ] hidden correction at 0x%08X (BG%u BA%u ROW%u COL%u), corrections=%zu\n",
-           dram_ecc_last_corrected_addr(&dram),
-           corr_location.bg,
-           corr_location.bank,
-           corr_location.row,
-           corr_location.column,
-           dram_ecc_correction_count(&dram));
-    printf("[RESULT] PASS: single-bit fault escaped the test (masked by On-Die ECC)\n");
-
-    dram_reset_ecc_stats(&dram);
-
-    if (inject_stuck_at32(&dram,
-                          DRAM_FAULT_STUCK_AT_0,
-                          stuck_address,
-                          stuck_mask,
-                          &stuck_injection) != 0)
-    {
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    /* ECC가 있으면 hard fault(stuck-at)조차 패턴 테스트를 통과해버린다 */
-    stuck_pass = memory_test_constant_pattern(&dram,
-                                              pattern_start,
-                                              pattern_length,
-                                              pattern,
-                                              &stuck_result) == 0;
-    logger_log_memory_test(&logger,
-                           "constant_pattern_with_stuck_at_0",
-                           stuck_pass,
-                           pattern_start,
-                           pattern_length,
-                           pattern,
-                           &stuck_result);
-
-    stuck_escaped = stuck_pass &&
-                    stuck_result.error_count == 0 &&
-                    dram_ecc_correction_count(&dram) > 0;
-    if (!stuck_escaped)
-    {
-        printf("[RESULT] FAIL: expected On-Die ECC escape did not happen for stuck-at\n");
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    printf("[ECC ] corrections=%zu (stuck-at is re-corrected on every read, not healed)\n",
-           dram_ecc_correction_count(&dram));
-    printf("[RESULT] PASS: stuck-at fault also escaped the test (hidden hard fault)\n");
-
-    // scrub 스크린: 같은 자리를 두 번 scrub해서, 한 번은(0x4000)은 scrub후에도 나타나는 hard fault, 다른 한 번은(0x5000) scrub후에는 사라지는 soft error를 구분
-    if (inject_bit_flip32(&dram, soft_address, soft_mask, &soft_injection) != 0)
-    {
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    stuck_cw = stuck_address & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
-    soft_cw = soft_address & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
-
-    printf("[TEST] Scrub pass #1: scan every codeword, correct and write back\n");
-    scrub_log_init(&scrub1, &dram, "pass1");
-    scrub1_events = dram_scrub_range(&dram, pattern_start, pattern_length,
-                                     scrub_report, &scrub1);
-    printf("[SCRUB] pass #1 done: events=%zu\n", scrub1_events);
-
-    memory_test_result_init(&scrub_summary);
-    scrub_summary.words_tested = pattern_length / ODECC_DATA_BYTES;
-    scrub_summary.error_count = scrub1_events;
-    scrub_summary.first_fail_address = (scrub1.count > 0) ? scrub1.addrs[0] : 0;
-    logger_log_memory_test(&logger, "scrub_pass1", 1, pattern_start,
-                           pattern_length, pattern, &scrub_summary);
-
-    printf("[TEST] Scrub pass #2: repeat - only hard faults should reappear\n");
-    scrub_log_init(&scrub2, &dram, "pass2");
-    scrub2_events = dram_scrub_range(&dram, pattern_start, pattern_length,
-                                     scrub_report, &scrub2);
-    printf("[SCRUB] pass #2 done: events=%zu\n", scrub2_events);
-
-    memory_test_result_init(&scrub_summary);
-    scrub_summary.words_tested = pattern_length / ODECC_DATA_BYTES;
-    scrub_summary.error_count = scrub2_events;
-    scrub_summary.first_fail_address = (scrub2.count > 0) ? scrub2.addrs[0] : 0;
-    logger_log_memory_test(&logger, "scrub_pass2", 1, pattern_start,
-                           pattern_length, pattern, &scrub_summary);
-
-    // 분류 기준: scrub 후에도 다시 나타나면 hard, 사라지면 soft
-    screen_ok = (scrub1_events == 2) &&
-                (scrub2_events == 1) &&
-                (scrub2.count == 1) &&
-                (scrub2.addrs[0] == stuck_cw);
-    if (!screen_ok)
-    {
-        printf("[RESULT] FAIL: scrub screen did not classify faults as expected\n");
-        dram_free(&dram);
-        logger_close(&logger);
-        return 1;
-    }
-
-    printf("[SCREEN] 0x%08X: corrected once, gone after rewrite -> SOFT error (healed)\n",
-           soft_cw);
-    printf("[SCREEN] 0x%08X: reappeared after rewrite -> HARD fault candidate (screen out)\n",
-           stuck_cw);
-    printf("[RESULT] PASS: repeated scrub separated soft error from hard fault\n");
 
     dram_free(&dram);
     logger_close(&logger);
