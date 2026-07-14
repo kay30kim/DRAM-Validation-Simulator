@@ -10,10 +10,11 @@ public partial class MainWindow : Window
 {
     static readonly string[] kHeader =
     {
-        "test_name", "status", "start_addr", "length", "pattern",
-        "words", "errors", "first_fail", "expected", "actual"
+        "test_id", "result", "start_addr", "length", "pattern",
+        "words", "errors", "first_fail", "expected", "actual",
+        "corr", "uncorr", "note"
     };
-    static readonly int[] kWidth = { 34, 7, 12, 8, 12, 8, 8, 12, 12, 12 };
+    static readonly int[] kWidth = { 34, 7, 12, 8, 12, 8, 8, 12, 12, 12, 6, 7, 34 };
 
     public MainWindow()
     {
