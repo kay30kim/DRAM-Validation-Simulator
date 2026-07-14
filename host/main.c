@@ -534,6 +534,27 @@ static int tc8_double_bit(DramModel *dram, Logger *logger)
     return 0;
 }
 
+// TC9. March C-: SAF/TF/coupling을 결정적으로 잡는 표준 알고리즘.
+// 깨끗한 메모리에서 6요소 전체가 초록이어야 한다
+static int tc9_march_c_minus(DramModel *dram, Logger *logger)
+{
+    MemoryTestResult result;
+    int pass;
+
+    // Arrange: 첫 요소 M0(w0)가 전 영역을 덮어쓰므로 이전 잔재는 자동 정리.
+    //          측정 카운터만 초기화
+    dram_reset_ecc_stats(dram);
+
+    // Act
+    pass = memory_test_march_c_minus(dram, REGION_START, REGION_LEN,
+                                     &result) == 0;
+    logger_row(logger, "march_c_minus", pass ? "PASS" : "FAIL", REGION_START,
+               REGION_LEN, 0U, &result, dram, "van_de_goor_march_c_minus");
+
+    // Assert
+    return pass ? 0 : -1;
+}
+
 int main(int argc, char **argv)
 {
     DramModel dram;
@@ -578,7 +599,8 @@ int main(int argc, char **argv)
         tc5_odecc_escape(&dram, &logger) != 0 ||
         tc6_stuck_escape(&dram, &logger) != 0 ||
         tc7_scrub_screen(&dram, &logger) != 0 ||
-        tc8_double_bit(&dram, &logger) != 0)
+        tc8_double_bit(&dram, &logger) != 0 ||
+        tc9_march_c_minus(&dram, &logger) != 0)
     {
         dram_free(&dram);
         logger_close(&logger);

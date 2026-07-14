@@ -362,3 +362,135 @@ int memory_test_topology_pattern(DramModel *dram,
 
     return 0;
 }
+
+// March 요소 하나: 지정 방향으로 전 워드를 돌며 읽어서 기대값 검사 -> 쓰기 / 혹은 read, write만 수행
+typedef struct MarchElement
+{
+    int descending;
+    int check_read;
+    uint32_t expected;
+    int do_write;
+    uint32_t write_value;
+    const char *label;
+} MarchElement;
+
+static int march_element(DramModel *dram,
+                         uint32_t start_address,
+                         size_t length_bytes,
+                         const MarchElement *element,
+                         MemoryTestResult *result)
+{
+    uint32_t count = (uint32_t)(length_bytes / sizeof(uint32_t));
+    uint32_t i;
+
+    dlog_printf("[MARCH] %s\n", element->label);
+
+    for (i = 0; i < count; i++)
+    {
+        uint32_t offset = element->descending ? (count - 1U - i) : i;
+        uint32_t address = start_address + offset * (uint32_t)sizeof(uint32_t);
+
+        if (element->check_read)
+        {
+            uint32_t actual = 0;
+
+            if (dram_read32(dram, address, &actual) != 0)
+            {
+                dlog_printf("[FAIL] march read failed at addr=0x%08X\n", address);
+                return -1;
+            }
+
+            result->words_tested++;
+
+            if (actual != element->expected)
+            {
+                if (result->error_count == 0)
+                {
+                    result->first_fail_address = address;
+                    result->first_expected = element->expected;
+                    result->first_actual = actual;
+                }
+                result->error_count++;
+            }
+        }
+
+        if (element->do_write)
+        {
+            if (dram_write32(dram, address, element->write_value) != 0)
+            {
+                dlog_printf("[FAIL] march write failed at addr=0x%08X\n", address);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+int memory_test_march_c_minus(DramModel *dram,
+                              uint32_t start_address,
+                              size_t length_bytes,
+                              MemoryTestResult *result)
+{
+    // {up(w0); up(r0,w1); up(r1,w0); down(r0,w1); down(r1,w0); up(r0)}
+    static const MarchElement kElements[6] =
+    {
+        { 0, 0, 0U,          1, 0x00000000U, "M0 up(w0)"      },
+        { 0, 1, 0x00000000U, 1, 0xFFFFFFFFU, "M1 up(r0,w1)"   },
+        { 0, 1, 0xFFFFFFFFU, 1, 0x00000000U, "M2 up(r1,w0)"   },
+        { 1, 1, 0x00000000U, 1, 0xFFFFFFFFU, "M3 down(r0,w1)" },
+        { 1, 1, 0xFFFFFFFFU, 1, 0x00000000U, "M4 down(r1,w0)" },
+        { 0, 1, 0x00000000U, 0, 0U,          "M5 up(r0)"      },
+    };
+    size_t i;
+
+    if (result != NULL)
+    {
+        memory_test_result_init(result);
+    }
+
+    if (dram == NULL || result == NULL || length_bytes == 0)
+    {
+        return -1;
+    }
+
+    if (!is_aligned32(start_address) || (length_bytes % sizeof(uint32_t)) != 0U)
+    {
+        dlog_printf("[FAIL] march c- requires 4-byte aligned range\n");
+        return -1;
+    }
+
+    if (!dram_is_valid_range(dram, start_address, length_bytes))
+    {
+        dlog_printf("[FAIL] march c- range is outside virtual DRAM\n");
+        return -1;
+    }
+
+    dlog_printf("[TEST] March C-: start=0x%08X length=%zu\n",
+                start_address, length_bytes);
+
+    for (i = 0; i < 6U; i++)
+    {
+        // march_element에서 차례대로 읽기/검사/쓰기 수행. 실패 시 즉시 중단
+        if (march_element(dram, start_address, length_bytes,
+                          &kElements[i], result) != 0)
+        {
+            return -1;
+        }
+    }
+
+    if (result->error_count > 0)
+    {
+        dlog_printf("[FAIL] March C- completed: reads=%zu errors=%zu first_fail=0x%08X expected=0x%08X actual=0x%08X\n",
+                    result->words_tested,
+                    result->error_count,
+                    result->first_fail_address,
+                    result->first_expected,
+                    result->first_actual);
+        return -1;
+    }
+
+    dlog_printf("[PASS] March C- completed: reads=%zu errors=%zu\n",
+                result->words_tested, result->error_count);
+    return 0;
+}

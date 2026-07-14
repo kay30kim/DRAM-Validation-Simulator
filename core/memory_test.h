@@ -29,4 +29,10 @@ int memory_test_topology_pattern(DramModel *dram,
                                  uint32_t base_pattern,
                                  MemoryTestResult *result);
 
+// March C-: {up(w0); up(r0,w1); up(r1,w0); down(r0,w1); down(r1,w0); up(r0)}
+int memory_test_march_c_minus(DramModel *dram,
+                              uint32_t start_address,
+                              size_t length_bytes,
+                              MemoryTestResult *result);
+
 #endif
