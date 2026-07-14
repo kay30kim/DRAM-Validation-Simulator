@@ -95,8 +95,8 @@ static void log_scrub_summary(Logger *logger, const char *name,
     summary.words_tested = REGION_LEN / ODECC_DATA_BYTES;
     summary.error_count = events;
     summary.first_fail_address = (log->count > 0) ? log->addrs[0] : 0;
-    logger_log_memory_test(logger, name, 1, REGION_START, REGION_LEN,
-                           REGION_PATTERN, &summary);
+    logger_row(logger, name, "PASS", REGION_START, REGION_LEN, REGION_PATTERN,
+               &summary, log->dram, "scrub_events_in_error_count");
 }
 
 static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
@@ -248,9 +248,9 @@ static int tc2_topology_pattern(DramModel *dram, Logger *logger)
     // Act
     pass = memory_test_topology_pattern(dram, TOPO_PATTERN, &result) == 0;
 
-    logger_log_memory_test(logger, "topology_pattern", pass, 0U,
-                           result.words_tested * sizeof(uint32_t),
-                           TOPO_PATTERN, &result);
+    logger_row(logger, "topology_pattern", pass ? "PASS" : "FAIL", 0U,
+               result.words_tested * sizeof(uint32_t), TOPO_PATTERN,
+               &result, dram, "bg_ba_aliasing_check");
 
     // Assert
     return pass ? 0 : -1;
@@ -285,8 +285,8 @@ static int tc3_basic_rw(DramModel *dram, Logger *logger)
         pass = 1;
     }
 
-    logger_log_smoke_test(logger, "basic_rw_smoke", pass, SMOKE_ADDR,
-                          SMOKE_PATTERN, actual);
+    logger_row(logger, "basic_rw_smoke", pass ? "PASS" : "FAIL", SMOKE_ADDR,
+               sizeof(uint32_t), SMOKE_PATTERN, NULL, dram, "single_word_rw");
 
     // Assert
     return pass ? 0 : -1;
@@ -302,8 +302,8 @@ static int tc4_constant_pattern(DramModel *dram, Logger *logger)
     pass = memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
                                         REGION_PATTERN, &result) == 0;
 
-    logger_log_memory_test(logger, "constant_pattern", pass, REGION_START,
-                           REGION_LEN, REGION_PATTERN, &result);
+    logger_row(logger, "constant_pattern", pass ? "PASS" : "FAIL", REGION_START,
+               REGION_LEN, REGION_PATTERN, &result, dram, "clean_baseline");
 
     // Assert
     return pass ? 0 : -1;
@@ -330,9 +330,9 @@ static int tc5_odecc_escape(DramModel *dram, Logger *logger)
                                                       REGION_LEN,
                                                       REGION_PATTERN,
                                                       &result) == 0;
-    logger_log_memory_test(logger, "constant_pattern_after_bit_flip",
-                           verify_pass, REGION_START, REGION_LEN,
-                           REGION_PATTERN, &result);
+    logger_row(logger, "constant_pattern_after_bit_flip",
+               verify_pass ? "PASS" : "FAIL", REGION_START, REGION_LEN,
+               REGION_PATTERN, &result, dram, "single_bit_masked_by_odecc");
 
     // Assert: PASS인데 정정 흔적이 남아 있어야 escape 재현 성공
     escaped = verify_pass &&
@@ -375,8 +375,9 @@ static int tc6_stuck_escape(DramModel *dram, Logger *logger)
     // Act: 전체 재기록+verify. TC5의 soft는 이때 치유되고 stuck만 남는다
     pass = memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
                                         REGION_PATTERN, &result) == 0;
-    logger_log_memory_test(logger, "constant_pattern_with_stuck_at_0", pass,
-                           REGION_START, REGION_LEN, REGION_PATTERN, &result);
+    logger_row(logger, "constant_pattern_with_stuck_at_0",
+               pass ? "PASS" : "FAIL", REGION_START, REGION_LEN,
+               REGION_PATTERN, &result, dram, "hard_fault_masked_by_odecc");
 
     // Assert
     escaped = pass &&
@@ -479,9 +480,9 @@ static int tc8_double_bit(DramModel *dram, Logger *logger)
                                                       ODECC_DATA_BYTES,
                                                       REGION_PATTERN,
                                                       &result) != 0;
-    logger_log_memory_test(logger, "double_bit_miscorrection",
-                           verify_fail ? 0 : 1, MISCORRECT_ADDR,
-                           ODECC_DATA_BYTES, REGION_PATTERN, &result);
+    logger_row(logger, "double_bit_miscorrection", verify_fail ? "FAIL" : "PASS",
+               MISCORRECT_ADDR, ODECC_DATA_BYTES, REGION_PATTERN, &result,
+               dram, "expected_fail_sec_miscorrected_3rd_bit");
 
     miscorrected = verify_fail &&
                    result.error_count == 1 &&
@@ -513,9 +514,9 @@ static int tc8_double_bit(DramModel *dram, Logger *logger)
                                                       ODECC_DATA_BYTES,
                                                       REGION_PATTERN,
                                                       &result) != 0;
-    logger_log_memory_test(logger, "double_bit_uncorrectable",
-                           verify_fail ? 0 : 1, UNCORR_ADDR,
-                           ODECC_DATA_BYTES, REGION_PATTERN, &result);
+    logger_row(logger, "double_bit_uncorrectable", verify_fail ? "FAIL" : "PASS",
+               UNCORR_ADDR, ODECC_DATA_BYTES, REGION_PATTERN, &result,
+               dram, "expected_fail_sec_uncorrectable_detected");
 
     uncorrectable = verify_fail &&
                     result.error_count == 2 &&
