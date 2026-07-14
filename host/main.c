@@ -12,6 +12,62 @@
 #define BYTES_PER_MB (1024U * 1024U)
 #define TEST_LOG_PATH "dram_test_results.csv"
 
+#define SCRUB_LOG_MAX 8U
+
+typedef struct ScrubLog
+{
+    const DramModel *dram;
+    const char *name;
+    uint32_t addrs[SCRUB_LOG_MAX];
+    size_t count;
+} ScrubLog;
+
+static void scrub_log_init(ScrubLog *log, const DramModel *dram, const char *name)
+{
+    size_t i;
+
+    log->dram = dram;
+    log->name = name;
+    log->count = 0;
+    for (i = 0; i < SCRUB_LOG_MAX; i++)
+    {
+        log->addrs[i] = 0;
+    }
+}
+
+static void scrub_report(void *ctx, uint32_t cw_addr, uint32_t bit_index,
+                         int uncorrectable)
+{
+    ScrubLog *log = (ScrubLog *)ctx;
+    DramAddress location;
+
+    if (log == NULL)
+    {
+        return;
+    }
+
+    if (log->count < SCRUB_LOG_MAX)
+    {
+        log->addrs[log->count] = cw_addr;
+    }
+    log->count++;
+
+    if (dram_decode_address(log->dram, cw_addr, &location) != 0)
+    {
+        return;
+    }
+
+    printf("[SCRUB] %s: %s addr=0x%08X (BG%u BA%u ROW%u COL%u) bit=%u\n",
+           log->name,
+           uncorrectable ? "UNCORRECTABLE" : "corrected",
+           cw_addr,
+           location.bg,
+           location.bank,
+           location.row,
+           location.column,
+           bit_index);
+}
+
 static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
 {
     char *endptr = NULL;
@@ -218,6 +274,8 @@ int main(int argc, char **argv)
     uint32_t injected_mask = 0x00000001U;
     uint32_t stuck_address = 0x4000U;
     uint32_t stuck_mask = 0x00000002U;
+    uint32_t soft_address = 0x5000U;
+    uint32_t soft_mask = 0x00000010U;
     int topology_pass = 0;
     int smoke_pass = 0;
     int pattern_pass = 0;
@@ -225,7 +283,16 @@ int main(int argc, char **argv)
     int stuck_pass = 0;
     int bitflip_escaped = 0;
     int stuck_escaped = 0;
+    int screen_ok = 0;
     DramAddress corr_location;
+    FaultInjectionResult soft_injection;
+    MemoryTestResult scrub_summary;
+    ScrubLog scrub1;
+    ScrubLog scrub2;
+    size_t scrub1_events = 0;
+    size_t scrub2_events = 0;
+    uint32_t stuck_cw = 0;
+    uint32_t soft_cw = 0;
 
     if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
     {
@@ -408,6 +475,63 @@ int main(int argc, char **argv)
     printf("[ECC ] corrections=%zu (stuck-at is re-corrected on every read, not healed)\n",
            dram_ecc_correction_count(&dram));
     printf("[RESULT] PASS: stuck-at fault also escaped the test (hidden hard fault)\n");
+
+    // scrub 스크린: 같은 자리를 두 번 scrub해서, 한 번은(0x4000)은 scrub후에도 나타나는 hard fault, 다른 한 번은(0x5000) scrub후에는 사라지는 soft error를 구분
+    if (inject_bit_flip32(&dram, soft_address, soft_mask, &soft_injection) != 0)
+    {
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    stuck_cw = stuck_address & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
+    soft_cw = soft_address & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
+
+    printf("[TEST] Scrub pass #1: scan every codeword, correct and write back\n");
+    scrub_log_init(&scrub1, &dram, "pass1");
+    scrub1_events = dram_scrub_range(&dram, pattern_start, pattern_length,
+                                     scrub_report, &scrub1);
+    printf("[SCRUB] pass #1 done: events=%zu\n", scrub1_events);
+
+    memory_test_result_init(&scrub_summary);
+    scrub_summary.words_tested = pattern_length / ODECC_DATA_BYTES;
+    scrub_summary.error_count = scrub1_events;
+    scrub_summary.first_fail_address = (scrub1.count > 0) ? scrub1.addrs[0] : 0;
+    logger_log_memory_test(&logger, "scrub_pass1", 1, pattern_start,
+                           pattern_length, pattern, &scrub_summary);
+
+    printf("[TEST] Scrub pass #2: repeat - only hard faults should reappear\n");
+    scrub_log_init(&scrub2, &dram, "pass2");
+    scrub2_events = dram_scrub_range(&dram, pattern_start, pattern_length,
+                                     scrub_report, &scrub2);
+    printf("[SCRUB] pass #2 done: events=%zu\n", scrub2_events);
+
+    memory_test_result_init(&scrub_summary);
+    scrub_summary.words_tested = pattern_length / ODECC_DATA_BYTES;
+    scrub_summary.error_count = scrub2_events;
+    scrub_summary.first_fail_address = (scrub2.count > 0) ? scrub2.addrs[0] : 0;
+    logger_log_memory_test(&logger, "scrub_pass2", 1, pattern_start,
+                           pattern_length, pattern, &scrub_summary);
+
+    // 분류 기준: scrub 후에도 다시 나타나면 hard, 사라지면 soft
+    screen_ok = (scrub1_events == 2) &&
+                (scrub2_events == 1) &&
+                (scrub2.count == 1) &&
+                (scrub2.addrs[0] == stuck_cw);
+    if (!screen_ok)
+    {
+        printf("[RESULT] FAIL: scrub screen did not classify faults as expected\n");
+        dram_free(&dram);
+        logger_close(&logger);
+        return 1;
+    }
+
+    printf("[SCREEN] 0x%08X: corrected once, gone after rewrite -> SOFT error (healed)\n",
+           soft_cw);
+    printf("[SCREEN] 0x%08X: reappeared after rewrite -> HARD fault candidate (screen out)\n",
+           stuck_cw);
+    printf("[RESULT] PASS: repeated scrub separated soft error from hard fault\n");
+
     dram_free(&dram);
     logger_close(&logger);
     printf("[DRAM] Virtual DRAM released\n");
