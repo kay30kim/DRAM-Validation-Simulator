@@ -27,6 +27,8 @@
 #define STUCK_MASK 0x00000002U
 #define SOFT_ADDR 0x5000U
 #define SOFT_MASK 0x00000010U
+#define MISCORRECT_ADDR 0x6000U
+#define UNCORR_ADDR 0x7000U
 
 #define SCRUB_LOG_MAX 8U
 
@@ -445,6 +447,92 @@ static int tc7_scrub_screen(DramModel *dram, Logger *logger)
     return 0;
 }
 
+// TC8. 2비트 결함: SEC의 한계. 신드롬이 남의 이름표와 겹치면 오정정,
+// 미할당 값이면 정정 불가로 검출된다
+static int tc8_double_bit(DramModel *dram, Logger *logger)
+{
+    MemoryTestResult result;
+    int verify_fail;
+    int miscorrected;
+    int uncorrectable;
+
+    // Arrange: 이전 시나리오의 stuck을 걷어내고 영역을 깨끗하게 재구축
+    dram_clear_faults(dram);
+    if (memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
+                                     REGION_PATTERN, &result) != 0)
+    {
+        return -1;
+    }
+
+    // Act 1: 한 코드워드에 2비트 주입. 자리0(이름표3)+자리1(이름표5)
+    //        -> 신드롬 6 = 자리2의 이름표 -> 엉뚱한 3번째 비트를 "정정"
+    printf("[TEST] Double-bit fault #1: bits 0,1 in one codeword (syndrome hits another position)\n");
+    if (inject_bit_flip32(dram, MISCORRECT_ADDR, 0x1U, NULL) != 0 ||
+        inject_bit_flip32(dram, MISCORRECT_ADDR, 0x2U, NULL) != 0)
+    {
+        return -1;
+    }
+
+    // 주입 과정의 read-back 정정은 측정에서 제외
+    dram_reset_ecc_stats(dram);
+    verify_fail = memory_test_verify_constant_pattern(dram, MISCORRECT_ADDR,
+                                                      ODECC_DATA_BYTES,
+                                                      REGION_PATTERN,
+                                                      &result) != 0;
+    logger_log_memory_test(logger, "double_bit_miscorrection",
+                           verify_fail ? 0 : 1, MISCORRECT_ADDR,
+                           ODECC_DATA_BYTES, REGION_PATTERN, &result);
+
+    miscorrected = verify_fail &&
+                   result.error_count == 1 &&
+                   result.first_actual == (REGION_PATTERN ^ 0x7U) &&
+                   dram_ecc_correction_count(dram) > 0;
+    if (!miscorrected)
+    {
+        printf("[RESULT] FAIL: expected miscorrection did not happen\n");
+        return -1;
+    }
+
+    printf("[SEC ] expected=0x%08X actual=0x%08X -> a 3rd bit was flipped by \"correction\"\n",
+           REGION_PATTERN, result.first_actual);
+    printf("[SEC ] corr_count=%zu <- the counter believes it fixed something (it lied)\n",
+           dram_ecc_correction_count(dram));
+
+    // Act 2: 자리0(이름표3)+자리127(이름표136) -> 신드롬 139 = 미할당
+    //        -> 정정 불가로 검출되고 데이터는 손대지 않는다
+    printf("[TEST] Double-bit fault #2: bits 0,127 (syndrome unassigned)\n");
+    if (inject_bit_flip32(dram, UNCORR_ADDR, 0x1U, NULL) != 0 ||
+        inject_bit_flip32(dram, UNCORR_ADDR + 12U, 0x80000000U, NULL) != 0)
+    {
+        return -1;
+    }
+
+    // 주입 과정의 read-back 정정은 측정에서 제외
+    dram_reset_ecc_stats(dram);
+    verify_fail = memory_test_verify_constant_pattern(dram, UNCORR_ADDR,
+                                                      ODECC_DATA_BYTES,
+                                                      REGION_PATTERN,
+                                                      &result) != 0;
+    logger_log_memory_test(logger, "double_bit_uncorrectable",
+                           verify_fail ? 0 : 1, UNCORR_ADDR,
+                           ODECC_DATA_BYTES, REGION_PATTERN, &result);
+
+    uncorrectable = verify_fail &&
+                    result.error_count == 2 &&
+                    dram_ecc_uncorrectable_count(dram) > 0 &&
+                    dram_ecc_correction_count(dram) == 0;
+    if (!uncorrectable)
+    {
+        printf("[RESULT] FAIL: expected uncorrectable detection did not happen\n");
+        return -1;
+    }
+
+    printf("[SEC ] uncorrectable detected: uncorr_count=%zu, data left untouched (2 wrong words)\n",
+           dram_ecc_uncorrectable_count(dram));
+    printf("[RESULT] PASS: SEC limit demonstrated - double-bit faults miscorrect or flag uncorrectable\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     DramModel dram;
@@ -488,7 +576,8 @@ int main(int argc, char **argv)
         tc4_constant_pattern(&dram, &logger) != 0 ||
         tc5_odecc_escape(&dram, &logger) != 0 ||
         tc6_stuck_escape(&dram, &logger) != 0 ||
-        tc7_scrub_screen(&dram, &logger) != 0)
+        tc7_scrub_screen(&dram, &logger) != 0 ||
+        tc8_double_bit(&dram, &logger) != 0)
     {
         dram_free(&dram);
         logger_close(&logger);
