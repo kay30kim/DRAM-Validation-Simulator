@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "odecc.h"
+
 #define DRAM_MAX_FAULTS 32U
 
 /*
@@ -109,5 +111,11 @@ size_t dram_ecc_correction_count(const DramModel *dram);
 size_t dram_ecc_uncorrectable_count(const DramModel *dram);
 uint32_t dram_ecc_last_corrected_addr(const DramModel *dram);
 void dram_reset_ecc_stats(DramModel *dram);
+
+// ECS(Error Check and Scrub)
+typedef void (*DramScrubReportFn)(void *ctx, uint32_t codeword_addr,
+                                  uint32_t bit_index, int uncorrectable);
+size_t dram_scrub_range(DramModel *dram, uint32_t start, size_t length,
+                        DramScrubReportFn report, void *ctx);
 
 #endif

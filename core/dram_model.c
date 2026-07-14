@@ -435,6 +435,70 @@ int dram_add_stuck_fault(DramModel *dram, DramFaultType type,
     return 0;
 }
 
+size_t dram_scrub_range(DramModel *dram, uint32_t start, size_t length,
+                        DramScrubReportFn report, void *ctx)
+{
+    uint32_t cw_addr;
+    uint32_t end;
+    size_t events = 0;
+
+    if (dram == NULL || dram->data == NULL || length == 0 ||
+        dram->odecc_enabled == 0)
+    {
+        return 0;
+    }
+
+    if ((size_t)start >= dram->size_bytes ||
+        length > dram->size_bytes - (size_t)start)
+    {
+        return 0;
+    }
+
+    cw_addr = start & ~(uint32_t)(ODECC_DATA_BYTES - 1U);
+    end = start + (uint32_t)length;
+
+    for (; cw_addr < end; cw_addr += ODECC_DATA_BYTES)
+    {
+        uint8_t codeword[ODECC_DATA_BYTES];
+        uint8_t parity;
+        OdeccResult ecc;
+        int rc;
+
+        ecc.bit_index = 0;
+        load_codeword(dram, cw_addr, codeword);
+        parity = dram->parity[cw_addr / ODECC_DATA_BYTES];
+
+        rc = odecc_decode(codeword, &parity, &ecc);
+        if (rc == ODECC_OK)
+        {
+            continue;
+        }
+
+        if (rc == ODECC_CORRECTED)
+        {
+            dram->ecc_corr_count++;
+            dram->ecc_last_corr_addr = cw_addr;
+            store_codeword(dram, cw_addr, codeword);
+            if (report != NULL)
+            {
+                report(ctx, cw_addr, ecc.bit_index, 0);
+            }
+        }
+        else
+        {
+            dram->ecc_uncorr_count++;
+            if (report != NULL)
+            {
+                report(ctx, cw_addr, 0, 1);
+            }
+        }
+
+        events++;
+    }
+
+    return events;
+}
+
 void dram_clear_faults(DramModel *dram)
 {
     if (dram == NULL)
