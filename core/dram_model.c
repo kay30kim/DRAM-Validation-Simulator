@@ -107,6 +107,81 @@ static void store_codeword(DramModel *dram, uint32_t cw_addr,
     dram->parity[cw_addr / ODECC_DATA_BYTES] = odecc_encode(data);
 }
 
+// 쓰기 시점에 발동하는 결함들: transition 실패는 새 값을 왜곡하고,
+// 커플링은 aggressor 비트에서 transition 시 victim 비트를 반전시킨다
+static void apply_write_faults_codeword(DramModel *dram, uint32_t cw_addr,
+                                        const uint8_t old_raw[ODECC_DATA_BYTES],
+                                        uint8_t new_data[ODECC_DATA_BYTES])
+{
+    size_t index;
+
+    for (index = 0; index < dram->fault_count; index++)
+    {
+        const DramFault *fault = &dram->faults[index];
+        uint32_t offset;
+        uint32_t old_word;
+        uint32_t new_word;
+
+        if (!fault->active ||
+            fault->address < cw_addr ||
+            fault->address >= cw_addr + ODECC_DATA_BYTES)
+        {
+            continue;
+        }
+
+        offset = fault->address - cw_addr;
+        memcpy(&old_word, &old_raw[offset], sizeof(old_word));
+        memcpy(&new_word, &new_data[offset], sizeof(new_word));
+
+        if (fault->type == DRAM_FAULT_TRANSITION_UP)
+        {
+            // 0->1로 오르려던 비트만 골라 0으로 되돌린다
+            uint32_t blocked = (~old_word & new_word) & fault->bit_mask;
+            new_word &= ~blocked;
+            memcpy(&new_data[offset], &new_word, sizeof(new_word));
+        }
+        else if (fault->type == DRAM_FAULT_TRANSITION_DOWN)
+        {
+            // 1->0으로 내리려던 비트만 골라 1로 되돌린다
+            uint32_t blocked = (old_word & ~new_word) & fault->bit_mask;
+            new_word |= blocked;
+            memcpy(&new_data[offset], &new_word, sizeof(new_word));
+        }
+        else if (fault->type == DRAM_FAULT_COUPLING_INV)
+        {
+            uint32_t changed = (old_word ^ new_word) & fault->bit_mask;
+
+            if (changed == 0)
+            {
+                continue;
+            }
+
+            if (fault->victim_address >= cw_addr &&
+                fault->victim_address < cw_addr + ODECC_DATA_BYTES)
+            {
+                // victim이 같은 코드워드면 지금 저장될 사본에 바로 반영
+                uint32_t victim_offset = fault->victim_address - cw_addr;
+                uint32_t victim_word;
+
+                memcpy(&victim_word, &new_data[victim_offset], sizeof(victim_word));
+                victim_word ^= fault->victim_mask;
+                memcpy(&new_data[victim_offset], &victim_word, sizeof(victim_word));
+            }
+            else
+            {
+                // 다른 코드워드면 raw 저장소를 직접 오염 (패리티는 갱신 안 함)
+                uint32_t victim_word;
+
+                memcpy(&victim_word, &dram->data[fault->victim_address],
+                       sizeof(victim_word));
+                victim_word ^= fault->victim_mask;
+                memcpy(&dram->data[fault->victim_address], &victim_word,
+                       sizeof(victim_word));
+            }
+        }
+    }
+}
+
 int dram_init(DramModel *dram, size_t size_bytes)
 {
     if (dram == NULL || size_bytes == 0)
@@ -219,6 +294,7 @@ int dram_is_valid_range(const DramModel *dram, uint32_t address, size_t length)
 int dram_write32(DramModel *dram, uint32_t address, uint32_t value)
 {
     uint8_t codeword[ODECC_DATA_BYTES];
+    uint8_t old_raw[ODECC_DATA_BYTES];
     uint8_t parity;
     uint32_t cw_addr;
 
@@ -243,13 +319,17 @@ int dram_write32(DramModel *dram, uint32_t address, uint32_t value)
         odecc_decode(codeword, &parity, &ecc);
     }
 
+    // transition/coupling 판정용 원본 (stuck 미적용 raw)
+    memcpy(old_raw, &dram->data[cw_addr], ODECC_DATA_BYTES);
+
     memcpy(&codeword[address - cw_addr], &value, sizeof(value));
+    apply_write_faults_codeword(dram, cw_addr, old_raw, codeword);
     store_codeword(dram, cw_addr, codeword);
     return 0;
 }
 
 // 읽기 = raw 셀 -> stuck-at 강제 -> ECC 디코드(1비트 정정) -> 워드 반환.
-// Error Colleciton : 1비트 정정이면 ecc_corr_count++, 신드롬 미할당(다중 오류 검출)이면 uncorr++ 기록만 되고 -> return 값은 정상 Read
+// Error Correction : 1비트 정정이면 ecc_corr_count++, 신드롬 미할당(다중 오류 검출)이면 uncorr++ 기록만 되고 -> return 값은 정상 Read
 int dram_read32(DramModel *dram, uint32_t address, uint32_t *out_value)
 {
     uint8_t codeword[ODECC_DATA_BYTES];
@@ -433,6 +513,91 @@ int dram_add_stuck_fault(DramModel *dram, DramFaultType type,
     dram->fault_count++;
 
     return 0;
+}
+
+int dram_add_transition_fault(DramModel *dram, DramFaultType type,
+                              uint32_t address, uint32_t bit_mask)
+{
+    DramFault *fault = NULL;
+
+    if (dram == NULL || bit_mask == 0)
+    {
+        return -1;
+    }
+
+    if (type != DRAM_FAULT_TRANSITION_UP && type != DRAM_FAULT_TRANSITION_DOWN)
+    {
+        return -1;
+    }
+
+    if (!is_aligned32(address) ||
+        !dram_is_valid_range(dram, address, sizeof(uint32_t)))
+    {
+        return -1;
+    }
+
+    if (dram->fault_count >= DRAM_MAX_FAULTS)
+    {
+        return -1;
+    }
+
+    fault = &dram->faults[dram->fault_count];
+    fault->active = 1;
+    fault->type = type;
+    fault->address = address;
+    fault->bit_mask = bit_mask;
+    dram->fault_count++;
+
+    return 0;
+}
+
+int dram_add_coupling_fault(DramModel *dram,
+                            uint32_t aggressor_address, uint32_t aggressor_mask,
+                            uint32_t victim_address, uint32_t victim_mask)
+{
+    DramFault *fault = NULL;
+
+    if (dram == NULL || aggressor_mask == 0 || victim_mask == 0)
+    {
+        return -1;
+    }
+
+    if (!is_aligned32(aggressor_address) || !is_aligned32(victim_address))
+    {
+        return -1;
+    }
+
+    if (!dram_is_valid_range(dram, aggressor_address, sizeof(uint32_t)) ||
+        !dram_is_valid_range(dram, victim_address, sizeof(uint32_t)))
+    {
+        return -1;
+    }
+
+    if (dram->fault_count >= DRAM_MAX_FAULTS)
+    {
+        return -1;
+    }
+
+    fault = &dram->faults[dram->fault_count];
+    fault->active = 1;
+    fault->type = DRAM_FAULT_COUPLING_INV;
+    fault->address = aggressor_address;
+    fault->bit_mask = aggressor_mask;
+    fault->victim_address = victim_address;
+    fault->victim_mask = victim_mask;
+    dram->fault_count++;
+
+    return 0;
+}
+
+void dram_set_odecc_enabled(DramModel *dram, int enabled)
+{
+    if (dram == NULL)
+    {
+        return;
+    }
+
+    dram->odecc_enabled = enabled ? 1 : 0;
 }
 
 size_t dram_scrub_range(DramModel *dram, uint32_t start, size_t length,

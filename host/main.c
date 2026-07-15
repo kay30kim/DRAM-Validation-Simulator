@@ -29,6 +29,8 @@
 #define SOFT_MASK 0x00000010U
 #define MISCORRECT_ADDR 0x6000U
 #define UNCORR_ADDR 0x7000U
+#define MATRIX_ADDR (REGION_START + 0x100U)
+#define MATRIX_VICTIM (MATRIX_ADDR + 4U)
 
 #define SCRUB_LOG_MAX 8U
 
@@ -555,6 +557,138 @@ static int tc9_march_c_minus(DramModel *dram, Logger *logger)
     return pass ? 0 : -1;
 }
 
+// TC10. 커버리지 매트릭스: 결함 모델 x 알고리즘 검출표
+static const char *kMatrixFaults[5] =
+{
+    "stuck_at_0", "stuck_at_1", "transition_up", "transition_down",
+    "coupling_inv"
+};
+
+static const char *kMatrixTests[2] = { "constant", "march" };
+
+static int matrix_inject(DramModel *dram, size_t fault_index)
+{
+    switch (fault_index)
+    {
+    case 0:
+        return dram_add_stuck_fault(dram, DRAM_FAULT_STUCK_AT_0,
+                                    MATRIX_ADDR, 0x1U);
+    case 1:
+        return dram_add_stuck_fault(dram, DRAM_FAULT_STUCK_AT_1,
+                                    MATRIX_ADDR, 0x1U);
+    case 2:
+        return dram_add_transition_fault(dram, DRAM_FAULT_TRANSITION_UP,
+                                         MATRIX_ADDR, 0x2U);
+    case 3:
+        return dram_add_transition_fault(dram, DRAM_FAULT_TRANSITION_DOWN,
+                                         MATRIX_ADDR, 0x2U);
+    case 4:
+        return dram_add_coupling_fault(dram, MATRIX_ADDR, 0x2U,
+                                       MATRIX_VICTIM, 0x1U);
+    default:
+        return -1;
+    }
+}
+
+// 검출 여부 반환 (1 = detect / 0 = miss)
+static int matrix_run_test(DramModel *dram, size_t test_index,
+                           MemoryTestResult *result)
+{
+    if (test_index == 0)
+    {
+        return memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
+                                            REGION_PATTERN, result) != 0;
+    }
+    return memory_test_march_c_minus(dram, REGION_START, REGION_LEN,
+                                     result) != 0;
+}
+
+static void matrix_reset_region(DramModel *dram)
+{
+    uint32_t address;
+
+    for (address = REGION_START; address < REGION_START + REGION_LEN;
+         address += (uint32_t)sizeof(uint32_t))
+    {
+        (void)dram_write32(dram, address, 0U);
+    }
+}
+
+static int tc10_coverage_matrix(DramModel *dram, Logger *logger)
+{
+    // 이론 기대값: constant는 패턴과 겹치는 결함을 놓치고 March C-는 전부 잡는다
+    static const int kExpected[5][2] =
+    {
+        { 0, 1 }, // stuck_at_0     : 패턴 bit0=0이라 constant는 MISS
+        { 1, 1 }, // stuck_at_1
+        { 1, 1 }, // transition_up
+        { 0, 1 }, // transition_down: constant는 1->0 전이를 안 시켜서 MISS
+        { 0, 1 }, // coupling_inv   : victim이 나중에 덮여서 constant는 MISS
+    };
+    int actual[5][2];
+    size_t fault;
+    size_t test;
+    int match = 1;
+
+    printf("[TEST] Coverage matrix: 5 fault models x 2 algorithms\n");
+    printf("[NOTE] ODECC disabled for this scenario - raw algorithm coverage\n");
+    dram_set_odecc_enabled(dram, 0);
+
+    for (fault = 0; fault < 5U; fault++)
+    {
+        for (test = 0; test < 2U; test++)
+        {
+            MemoryTestResult result;
+            char row_id[64];
+
+            // Arrange: 결함 초기화 -> 저장소 0 리셋 -> 이번 결함 주입
+            dram_clear_faults(dram);
+            matrix_reset_region(dram);
+            if (matrix_inject(dram, fault) != 0)
+            {
+                dram_set_odecc_enabled(dram, 1);
+                return -1;
+            }
+
+            // Act
+            actual[fault][test] = matrix_run_test(dram, test, &result);
+
+            snprintf(row_id, sizeof(row_id), "matrix_%s_%s",
+                     kMatrixFaults[fault], kMatrixTests[test]);
+            logger_row(logger, row_id,
+                       actual[fault][test] ? "DETECT" : "MISS",
+                       MATRIX_ADDR, REGION_LEN, REGION_PATTERN, &result,
+                       dram, "coverage_matrix_odecc_off");
+
+            if (actual[fault][test] != kExpected[fault][test])
+            {
+                match = 0;
+            }
+        }
+    }
+
+    dram_clear_faults(dram);
+    dram_set_odecc_enabled(dram, 1);
+
+    printf("[MATRIX] %-16s %-9s %s\n", "fault", "constant", "march_c-");
+    for (fault = 0; fault < 5U; fault++)
+    {
+        printf("[MATRIX] %-16s %-9s %s\n",
+               kMatrixFaults[fault],
+               actual[fault][0] ? "DETECT" : "MISS",
+               actual[fault][1] ? "DETECT" : "MISS");
+    }
+
+    if (!match)
+    {
+        printf("[RESULT] FAIL: coverage matrix does not match theory\n");
+        return -1;
+    }
+
+    printf("[RESULT] PASS: coverage matrix matches theory (march c- covers all modeled faults)\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     DramModel dram;
@@ -600,7 +734,8 @@ int main(int argc, char **argv)
         tc6_stuck_escape(&dram, &logger) != 0 ||
         tc7_scrub_screen(&dram, &logger) != 0 ||
         tc8_double_bit(&dram, &logger) != 0 ||
-        tc9_march_c_minus(&dram, &logger) != 0)
+        tc9_march_c_minus(&dram, &logger) != 0 ||
+        tc10_coverage_matrix(&dram, &logger) != 0)
     {
         dram_free(&dram);
         logger_close(&logger);

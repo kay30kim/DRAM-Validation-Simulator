@@ -56,7 +56,10 @@ typedef enum DramFaultType
 {
     DRAM_FAULT_BIT_FLIP = 0,
     DRAM_FAULT_STUCK_AT_0,
-    DRAM_FAULT_STUCK_AT_1
+    DRAM_FAULT_STUCK_AT_1,
+    DRAM_FAULT_TRANSITION_UP,   // 0->1 전이 실패: 1을 써도 0에 머무름
+    DRAM_FAULT_TRANSITION_DOWN, // 1->0 전이 실패: 0을 써도 1에 머무름
+    DRAM_FAULT_COUPLING_INV     // aggressor 비트가 전이하면 victim 비트가 반전
 } DramFaultType;
 
 typedef struct DramFault
@@ -65,6 +68,8 @@ typedef struct DramFault
     DramFaultType type;
     uint32_t address;
     uint32_t bit_mask;
+    uint32_t victim_address; // COUPLING 전용
+    uint32_t victim_mask;    // COUPLING 전용
 } DramFault;
 
 typedef struct DramModel
@@ -103,6 +108,18 @@ int dram_inject_bit_flip(DramModel *dram, uint32_t address, uint32_t bit_mask);
 /* type은 STUCK_AT_0/1만 허용 */
 int dram_add_stuck_fault(DramModel *dram, DramFaultType type,
                          uint32_t address, uint32_t bit_mask);
+
+// 전이 실패 결함 등록 (type은 TRANSITION_UP/DOWN만 허용)
+int dram_add_transition_fault(DramModel *dram, DramFaultType type,
+                              uint32_t address, uint32_t bit_mask);
+
+// 반전 커플링 결함 등록: aggressor 비트가 쓰기에서 전이하면 victim 비트가 반전
+int dram_add_coupling_fault(DramModel *dram,
+                            uint32_t aggressor_address, uint32_t aggressor_mask,
+                            uint32_t victim_address, uint32_t victim_mask);
+
+// 커버리지 측정 등 "ECC 없는 순수 셀 동작"이 필요할 때 끄고 켠다
+void dram_set_odecc_enabled(DramModel *dram, int enabled);
 
 void dram_clear_faults(DramModel *dram);
 size_t dram_fault_count(const DramModel *dram);
