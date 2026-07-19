@@ -32,6 +32,12 @@
 #define MATRIX_ADDR (REGION_START + 0x100U)
 #define MATRIX_VICTIM (MATRIX_ADDR + 4U)
 
+#define RETENTION_ADDR 0x14000U
+#define RETENTION_LEN 64U
+#define RETENTION_PATTERN 0xFFFFFFFFU
+#define RETENTION_MASK 0x00000001U
+#define RETENTION_HOLD_NS 40000000ULL // 40ms은(retention없이 버틸수있는 기간) 그냥 임의로 한 값이고 tREF인 32ms 주기엔 괜찮고 고온 절반(20ms)엔 죽게 // 단위 ns!
+
 #define SCRUB_LOG_MAX 8U
 
 typedef struct ScrubLog
@@ -689,6 +695,95 @@ static int tc10_coverage_matrix(DramModel *dram, Logger *logger)
     return 0;
 }
 
+static void retention_fill(DramModel *dram)
+{
+    uint32_t address;
+
+    for (address = RETENTION_ADDR; address < RETENTION_ADDR + RETENTION_LEN;
+         address += (uint32_t)sizeof(uint32_t))
+    {
+        (void)dram_write32(dram, address, RETENTION_PATTERN);
+    }
+}
+
+// 조건 하나(온도, 대기 시간, refresh 여부)를 돌리고 유지=1 / 방전=0을 돌려준다
+static int retention_case(DramModel *dram, Logger *logger, const char *id,
+                          int temp_c, uint64_t step_ns, int steps,
+                          int do_refresh, const char *note)
+{
+    MemoryTestResult result;
+    int held;
+    int step;
+
+    dram_set_temperature(dram, temp_c);
+    dram_refresh(dram);
+    retention_fill(dram);
+
+    for (step = 0; step < steps; step++)
+    {
+        dram_advance_time(dram, step_ns);
+        if (do_refresh)
+        {
+            dram_refresh(dram);
+        }
+    }
+
+    held = memory_test_verify_constant_pattern(dram, RETENTION_ADDR,
+                                               RETENTION_LEN, RETENTION_PATTERN,
+                                               &result) == 0;
+    logger_row(logger, id, held ? "PASS" : "FAIL", RETENTION_ADDR, RETENTION_LEN,
+               RETENTION_PATTERN, &result, dram, note);
+    printf("[RET ] %s @%dC: %s\n", id, temp_c, held ? "held" : "data lost");
+    return held;
+}
+
+// TC11. retention/refresh: refresh를 제때 못 받으면 약한 셀이 방전(1->0)된다.
+// 근거: datasheet p.23 - tREFI(3.9us) x 8192회 = 32ms(tREF) 주기,
+// Table 2: 85도 초과 시 tREFI/2. ODECC는 꺼서 raw 셀 거동만 본다
+static int tc11_retention_refresh(DramModel *dram, Logger *logger)
+{
+    int ok = 1;
+
+    printf("[TEST] Retention/refresh: weak cell decays without timely refresh\n");
+    printf("[NOTE] ODECC(On Die Error Correction Code) disabled - raw retention only\n");
+    dram_set_odecc_enabled(dram, 0);
+    dram_clear_faults(dram);
+
+    // 약한 셀 하나: 40ms 버팀. tREFW(32ms) 주기 refresh면 살고 놓치면 죽는다
+    if (dram_add_retention_fault(dram, RETENTION_ADDR, RETENTION_MASK,
+                                 RETENTION_HOLD_NS) != 0)
+    {
+        dram_set_odecc_enabled(dram, 1);
+        return -1;
+    }
+
+    // 25도: refresh 없이 50ms(>40ms)면 방전, tREFW마다 refresh면 유지
+    ok &= !retention_case(dram, logger, "ret_25c_no_refresh_50ms", 25,
+                          50000000ULL, 1, 0, "no_refresh_decays");
+    ok &= retention_case(dram, logger, "ret_25c_refresh_32ms", 25,
+                         DRAM_TREFW_NS, 3, 1, "trefw_refresh_holds");
+
+    // 95도: 셀이 20ms밖에 못 버틴다. 32ms 주기 refresh는 늦고 16ms는 안 늦는다
+    ok &= !retention_case(dram, logger, "ret_95c_refresh_32ms", 95,
+                          DRAM_TREFW_NS, 1, 1, "hot_normal_refresh_late");
+    ok &= retention_case(dram, logger, "ret_95c_refresh_16ms", 95,
+                         DRAM_TREFW_NS / 2U, 4, 1, "hot_2x_refresh_holds");
+
+    dram_clear_faults(dram);
+    dram_set_temperature(dram, 25);
+    dram_refresh(dram);
+    dram_set_odecc_enabled(dram, 1);
+
+    if (!ok)
+    {
+        printf("[RESULT] FAIL: retention/refresh model did not behave as expected\n");
+        return -1;
+    }
+
+    printf("[RESULT] PASS: refresh beats retention; above 85C refresh must double\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     DramModel dram;
@@ -735,7 +830,8 @@ int main(int argc, char **argv)
         tc7_scrub_screen(&dram, &logger) != 0 ||
         tc8_double_bit(&dram, &logger) != 0 ||
         tc9_march_c_minus(&dram, &logger) != 0 ||
-        tc10_coverage_matrix(&dram, &logger) != 0)
+        tc10_coverage_matrix(&dram, &logger) != 0 ||
+        tc11_retention_refresh(&dram, &logger) != 0)
     {
         dram_free(&dram);
         logger_close(&logger);
