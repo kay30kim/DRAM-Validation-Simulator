@@ -214,6 +214,8 @@ int dram_init(DramModel *dram, size_t size_bytes)
     dram->size_bytes = size_bytes;
     dram->fault_count = 0;
     dram->odecc_enabled = 1;
+    dram->temperature_c = 25;
+    dram->ns_since_refresh = 0;
     return 0;
 }
 
@@ -588,6 +590,90 @@ int dram_add_coupling_fault(DramModel *dram,
     dram->fault_count++;
 
     return 0;
+}
+
+int dram_add_retention_fault(DramModel *dram, uint32_t address,
+                             uint32_t bit_mask, uint64_t retention_ns)
+{
+    DramFault *fault = NULL;
+
+    if (dram == NULL || bit_mask == 0 || retention_ns == 0 ||
+        !is_aligned32(address) ||
+        !dram_is_valid_range(dram, address, sizeof(uint32_t)) ||
+        dram->fault_count >= DRAM_MAX_FAULTS)
+    {
+        return -1;
+    }
+
+    fault = &dram->faults[dram->fault_count];
+    fault->active = 1;
+    fault->type = DRAM_FAULT_RETENTION;
+    fault->address = address;
+    fault->bit_mask = bit_mask;
+    fault->retention_ns = retention_ns;
+    dram->fault_count++;
+
+    return 0;
+}
+
+void dram_set_temperature(DramModel *dram, int celsius)
+{
+    if (dram != NULL)
+    {
+        dram->temperature_c = celsius;
+    }
+}
+
+// 시간이 지났다고 가정하고 움직이는 함수
+void dram_advance_time(DramModel *dram, uint64_t elapsed_ns)
+{
+    size_t index;
+    uint64_t limit;
+    uint32_t word;
+
+    if (dram == NULL || dram->data == NULL)
+    {
+        return;
+    }
+
+    dram->ns_since_refresh += elapsed_ns;
+
+    for (index = 0; index < dram->fault_count; index++)
+    {
+        DramFault *fault = &dram->faults[index];
+
+        if (!fault->active || fault->type != DRAM_FAULT_RETENTION)
+        {
+            continue;
+        }
+
+        // p.23 Table 2: 85도 넘으면 refresh를 2배로 하라고 한다.
+        // 더우면 전하가 빨리 새기 때문 -> 여기선 버티는 시간을 절반으로 친다
+        limit = fault->retention_ns;
+        if (dram->temperature_c > DRAM_REFRESH_HIGH_TEMP_C)
+        {
+            limit /= 2U;
+        }
+
+        // 방전 = 충전(1)돼 있던 비트가 0으로. raw 저장소에서 직접 내린다
+        if (dram->ns_since_refresh >= limit)
+        {
+            // 이거 대신 dram write32를 쓰면 parity까지 갱신되므로 retention fault가 ODECC로 정상으로 정정되어 버린다.
+            // retention fault는 ECC 정정이 안 되므로 raw 저장소를 직접 fault!
+            memcpy(&word, &dram->data[fault->address], sizeof(word));
+            word &= ~fault->bit_mask;
+            memcpy(&dram->data[fault->address], &word, sizeof(word));
+        }
+    }
+}
+
+void dram_refresh(DramModel *dram)
+{
+    // 제때 왔으면 다시 충전된 것. 이미 방전된 값은 되살리지 않는다
+    if (dram != NULL)
+    {
+        dram->ns_since_refresh = 0;
+    }
 }
 
 void dram_set_odecc_enabled(DramModel *dram, int enabled)

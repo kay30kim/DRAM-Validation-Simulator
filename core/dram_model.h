@@ -27,6 +27,12 @@
 #define DRAM_SPEC_ROW_BITS 16U
 #define DRAM_SPEC_COL_BITS 10U
 
+// datasheet p.23 "1.3 tREFI and tRFC parameters":
+//  - tREFI(3.9us) 간격의 REFab 8,192회 = 32ms(tREF) 주기로 전 row 순환
+//  - Table 2: 85 < Tcase <= 95도면 tREFI/2, 즉 refresh 2배
+#define DRAM_TREFW_NS 32000000ULL   // p.23 tREF=32ms (JESD79-5 이름은 tREFW)
+#define DRAM_REFRESH_HIGH_TEMP_C 85 // p.23 Table 2 온도 경계
+
 typedef struct DramGeometry
 {
     uint32_t bank_groups;     /* 8 (p.4) */
@@ -59,7 +65,8 @@ typedef enum DramFaultType
     DRAM_FAULT_STUCK_AT_1,
     DRAM_FAULT_TRANSITION_UP,   // 0->1 전이 실패: 1을 써도 0에 머무름
     DRAM_FAULT_TRANSITION_DOWN, // 1->0 전이 실패: 0을 써도 1에 머무름
-    DRAM_FAULT_COUPLING_INV     // aggressor 비트가 전이하면 victim 비트가 반전
+    DRAM_FAULT_COUPLING_INV,    // aggressor 비트가 전이하면 victim 비트가 반전
+    DRAM_FAULT_RETENTION        // 약한 셀: retention 안에 refresh 못 받으면 방전(1->0)
 } DramFaultType;
 
 typedef struct DramFault
@@ -70,6 +77,7 @@ typedef struct DramFault
     uint32_t bit_mask;
     uint32_t victim_address; // COUPLING 전용
     uint32_t victim_mask;    // COUPLING 전용
+    uint64_t retention_ns;   // RETENTION 전용: refresh 없이 버틸 수 있는 시간
 } DramFault;
 
 typedef struct DramModel
@@ -86,6 +94,10 @@ typedef struct DramModel
     size_t ecc_corr_count;
     size_t ecc_uncorr_count;
     uint32_t ecc_last_corr_addr;
+
+    // retention/refresh 상태: 지금 온도, 마지막 refresh 후 지난 시간
+    int temperature_c;
+    uint64_t ns_since_refresh; // 실제로는 절대 존재하지 않는 변수. 얼마나 refresh후 시간이 지났는지 추적용
 } DramModel;
 
 int dram_init(DramModel *dram, size_t size_bytes);
@@ -117,6 +129,18 @@ int dram_add_transition_fault(DramModel *dram, DramFaultType type,
 int dram_add_coupling_fault(DramModel *dram,
                             uint32_t aggressor_address, uint32_t aggressor_mask,
                             uint32_t victim_address, uint32_t victim_mask);
+
+// 약한 셀 등록: retention_ns 안에 refresh를 못 받으면 mask 비트가 방전(1->0)된다
+int dram_add_retention_fault(DramModel *dram, uint32_t address,
+                             uint32_t bit_mask, uint64_t retention_ns);
+
+void dram_set_temperature(DramModel *dram, int celsius);
+
+// 시간을 흘려보낸다. refresh 없이 버틸 수 있는 시간을 넘긴 약한 셀은 방전된다
+void dram_advance_time(DramModel *dram, uint64_t elapsed_ns);
+
+// refresh 1회(p.23의 REFab이라고 보면 됨). 지난 시간을 0으로. 이미 방전된 값은 못 살린다
+void dram_refresh(DramModel *dram);
 
 // 커버리지 측정 등 "ECC 없는 순수 셀 동작"이 필요할 때 끄고 켠다
 void dram_set_odecc_enabled(DramModel *dram, int enabled);
