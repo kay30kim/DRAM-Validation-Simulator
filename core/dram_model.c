@@ -655,8 +655,8 @@ void dram_advance_time(DramModel *dram, uint64_t elapsed_ns)
             limit /= 2U;
         }
 
-        // 방전 = 충전(1)돼 있던 비트가 0으로. raw 저장소에서 직접 내린다
-        if (dram->ns_since_refresh >= limit)
+        // 방전 = 충전(1)돼 있던 비트가 0으로. raw에서 직접 내리는 작업 (나중에 dram_refresh에서 ns_since_refresh바꿔도 이미 방전된건 못 살린다)
+        if (dram->ns_since_refresh >= limit) 
         {
             // 이거 대신 dram write32를 쓰면 parity까지 갱신되므로 retention fault가 ODECC로 정상으로 정정되어 버린다.
             // retention fault는 ECC 정정이 안 되므로 raw 저장소를 직접 fault!
@@ -669,7 +669,7 @@ void dram_advance_time(DramModel *dram, uint64_t elapsed_ns)
 
 void dram_refresh(DramModel *dram)
 {
-    // 제때 왔으면 다시 충전된 것. 이미 방전된 값은 되살리지 않는다
+    // dram->ns_since_refresh = 0 이어도 dram_davance_time에서 raw에서 0으로 방전된거는 변함없음
     if (dram != NULL)
     {
         dram->ns_since_refresh = 0;

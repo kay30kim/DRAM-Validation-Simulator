@@ -119,7 +119,7 @@ static void print_usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
     printf("  --size-mb <n>              virtual DRAM size in MB (default %u)\n", DEFAULT_DRAM_MB);
-    printf("  --test <name>              all(default), tc1..tc11, constant, march\n");
+    printf("  --test <name>              all(default), tc1..tc11, constant, march, shmoo\n");
     printf("  --inject <type:addr:mask>  type: bitflip, sa0, sa1  ex) sa1:0x3000:0x1\n");
 }
 
@@ -942,6 +942,152 @@ static int run_cli_march(DramModel *dram, Logger *logger)
     return 0;
 }
 
+// shmoo 스윕의 격자. 실물 shmoo는 전압/타이밍을 흔들지만
+// 여기선 모델이 가진 두 축(온도, refresh 주기)을 흔든다
+#define SHMOO_TEMP_MIN 25
+#define SHMOO_TEMP_STEP 10
+#define SHMOO_TEMPS 8U       // 25~95도
+#define SHMOO_PERIOD_MIN 4U
+#define SHMOO_PERIOD_STEP 4U
+#define SHMOO_PERIODS 11U    // 4~44ms
+
+// 해당 temp_c온도에서 period_ms 기간동안 refresh하면 디램 잘 동작 하는지?
+// main에서만 사용할거니까 static
+static int shmoo_point(DramModel *dram, Logger *logger, int temp_c,
+                       uint32_t period_ms)
+{
+    MemoryTestResult result;
+    char id[32];
+    uint32_t address;
+    uint32_t actual;
+    int held = 1;
+    int cycle;
+
+    dram_set_temperature(dram, temp_c);
+    dram_refresh(dram);
+    retention_fill(dram);
+
+    for (cycle = 0; cycle < 3; cycle++) // 3은 임이의 횟수. 1회만 해도 되지만 2~3회 반복하면 안정성 확인
+    {
+        dram_advance_time(dram, (uint64_t)period_ms * 1000000ULL);
+        dram_refresh(dram);
+    }
+
+    memory_test_result_init(&result);
+    for (address = RETENTION_ADDR; address < RETENTION_ADDR + RETENTION_LEN;
+         address += (uint32_t)sizeof(uint32_t))
+    {
+        actual = 0;
+        (void)dram_read32(dram, address, &actual);
+        result.words_tested++;
+        if (actual != RETENTION_PATTERN)
+        {
+            if (result.error_count == 0)
+            {
+                result.first_fail_address = address;
+                result.first_expected = RETENTION_PATTERN;
+                result.first_actual = actual;
+            }
+            result.error_count++;
+            held = 0;
+        }
+    }
+
+    snprintf(id, sizeof(id), "shmoo_%dc_%02ums", temp_c, period_ms);
+    logger_row(logger, id, held ? "PASS" : "FAIL", RETENTION_ADDR, RETENTION_LEN,
+               RETENTION_PATTERN, &result, dram, "shmoo_sweep");
+    return held;
+}
+
+// 온도 x refresh 주기 평면을 훑어 PASS/FAIL 경계 지도를 그린다.
+// p.23 Table 2의 "85도 초과 -> refresh 2배" 규칙이 지도에 계단으로 나타난다
+static int run_cli_shmoo(DramModel *dram, Logger *logger)
+{
+    int held[SHMOO_TEMPS][SHMOO_PERIODS];
+    uint32_t shmoo_row;
+    uint32_t shmoo_col;
+    int temp_c;
+    uint32_t period_ms;
+    uint64_t limit_ns;
+    int expected;
+    int match = 1;
+
+    printf("[TEST] Shmoo sweep: temperature x refresh period, weak cell 40ms\n");
+    printf("[NOTE] ODECC(On Die Error Correction Code) disabled - raw retention only\n");
+    dram_set_odecc_enabled(dram, 0);
+    dram_clear_faults(dram);
+
+    if (dram_add_retention_fault(dram, RETENTION_ADDR, RETENTION_MASK,
+                                 RETENTION_HOLD_NS) != 0)
+    {
+        dram_set_odecc_enabled(dram, 1);
+        return -1;
+    }
+
+    for (shmoo_row = 0; shmoo_row < SHMOO_TEMPS; shmoo_row++)
+    {
+        temp_c = SHMOO_TEMP_MIN + (int)shmoo_row * SHMOO_TEMP_STEP;
+        for (shmoo_col = 0; shmoo_col < SHMOO_PERIODS; shmoo_col++)
+        {
+            period_ms = SHMOO_PERIOD_MIN + shmoo_col * SHMOO_PERIOD_STEP; // 4ms ~ 44ms
+            held[shmoo_row][shmoo_col] = shmoo_point(dram, logger, temp_c, period_ms);
+        }
+    }
+
+    printf("[SHMOO] ms  :");
+    for (shmoo_col = 0; shmoo_col < SHMOO_PERIODS; shmoo_col++)
+    {
+        printf(" %2u", SHMOO_PERIOD_MIN + shmoo_col * SHMOO_PERIOD_STEP);
+    }
+    printf("\n");
+
+    for (shmoo_row = 0; shmoo_row < SHMOO_TEMPS; shmoo_row++)
+    {
+        temp_c = SHMOO_TEMP_MIN + (int)shmoo_row * SHMOO_TEMP_STEP;
+        printf("[SHMOO] %2dC :", temp_c);
+        for (shmoo_col = 0; shmoo_col < SHMOO_PERIODS; shmoo_col++)
+        {
+            printf("  %c", held[shmoo_row][shmoo_col] ? '.' : 'X');
+        }
+        printf("\n");
+    }
+    printf("[SHMOO] . = held (PASS), X = lost (FAIL)\n");
+
+    // Datasheet tREFI and tRFC parameters잘 되는지 확인 (온도 85도 이하 / 85도 이상 95도 이하 / 95도 이상)
+    for (shmoo_row = 0; shmoo_row < SHMOO_TEMPS; shmoo_row++)
+    {
+        temp_c = SHMOO_TEMP_MIN + (int)shmoo_row * SHMOO_TEMP_STEP;
+        limit_ns = RETENTION_HOLD_NS;
+        if (temp_c > DRAM_REFRESH_HIGH_TEMP_C)
+        {
+            limit_ns /= 2U;
+        }
+        for (shmoo_col = 0; shmoo_col < SHMOO_PERIODS; shmoo_col++)
+        {
+            period_ms = SHMOO_PERIOD_MIN + shmoo_col * SHMOO_PERIOD_STEP;
+            expected = ((uint64_t)period_ms * 1000000ULL) < limit_ns;
+            if (held[shmoo_row][shmoo_col] != expected)
+            {
+                match = 0;
+            }
+        }
+    }
+
+    dram_clear_faults(dram);
+    dram_set_temperature(dram, 25);
+    dram_refresh(dram);
+    dram_set_odecc_enabled(dram, 1);
+
+    if (!match)
+    {
+        printf("[RESULT] FAIL: shmoo map does not match theory\n");
+        return -1;
+    }
+
+    printf("[RESULT] PASS: boundary at 40ms, halved above 85C as p.23 Table 2 says\n");
+    return 0;
+}
+
 // 이름 -> 시나리오 함수. --test tc7 처럼 하나만 골라 돌릴 수 있다
 typedef struct TestEntry
 {
@@ -976,6 +1122,11 @@ static int run_selected(DramModel *dram, Logger *logger, const CliOptions *opt)
     if (strcmp(opt->test_name, "march") == 0)
     {
         return run_cli_march(dram, logger);
+    }
+
+    if (strcmp(opt->test_name, "shmoo") == 0)
+    {
+        return run_cli_shmoo(dram, logger);
     }
 
     if (strcmp(opt->test_name, "all") == 0)
