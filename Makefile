@@ -36,7 +36,7 @@ core/error_injection.o: core/error_injection.c core/error_injection.h core/dram_
 	$(CC) $(CFLAGS) -c core/error_injection.c -o core/error_injection.o
 
 run: all
-	./$(TARGET) $(DRAM_MB)
+	./$(TARGET) --size-mb $(DRAM_MB)
 
 clean:
 	rm -f $(OBJS) $(TARGET) dram_test_results.csv

@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define DEFAULT_DRAM_MB 64U
 #define BYTES_PER_MB (1024U * 1024U)
@@ -107,31 +108,152 @@ static void log_scrub_summary(Logger *logger, const char *name,
                &summary, log->dram, "scrub_events_in_error_count");
 }
 
-static int parse_dram_size_mb(int argc, char **argv, size_t *out_mb)
+typedef struct CliOptions
 {
-    char *endptr = NULL;
+    size_t size_mb;
+    const char *test_name;
+    const char *inject_spec;
+} CliOptions;
+
+static void print_usage(const char *prog)
+{
+    printf("Usage: %s [options]\n", prog);
+    printf("  --size-mb <n>              virtual DRAM size in MB (default %u)\n", DEFAULT_DRAM_MB);
+    printf("  --test <name>              all(default), tc1..tc11, constant, march\n");
+    printf("  --inject <type:addr:mask>  type: bitflip, sa0, sa1  ex) sa1:0x3000:0x1\n");
+}
+
+static int parse_u32(const char *text, uint32_t *out)
+{
+    char *end = NULL;
     unsigned long value = 0;
 
-    if (out_mb == NULL)
+    errno = 0;
+    value = strtoul(text, &end, 0); // 밑수 0: "0x" 접두어도 알아서 처리
+    if (errno != 0 || end == text || *end != '\0' || value > 0xFFFFFFFFUL)
     {
         return -1;
     }
 
-    if (argc < 2)
+    *out = (uint32_t)value;
+    return 0;
+}
+
+static int parse_args(int argc, char **argv, CliOptions *opt)
+{
+    int i;
+
+    opt->size_mb = DEFAULT_DRAM_MB;
+    opt->test_name = "all";
+    opt->inject_spec = NULL;
+
+    for (i = 1; i < argc; i++)
     {
-        *out_mb = DEFAULT_DRAM_MB;
-        return 0;
+        const char *name = argv[i];
+        const char *value = (i + 1 < argc) ? argv[i + 1] : NULL;
+
+        if (strcmp(name, "--help") == 0)
+        {
+            return 1;
+        }
+
+        if (value == NULL)
+        {
+            return -1;
+        }
+
+        if (strcmp(name, "--size-mb") == 0)
+        {
+            uint32_t mb = 0;
+
+            if (parse_u32(value, &mb) != 0 || mb == 0)
+            {
+                return -1;
+            }
+            opt->size_mb = mb;
+        }
+        else if (strcmp(name, "--test") == 0)
+        {
+            opt->test_name = value;
+        }
+        else if (strcmp(name, "--inject") == 0)
+        {
+            opt->inject_spec = value;
+        }
+        else
+        {
+            return -1;
+        }
+        i += 1;
     }
+
+    return 0;
+}
+
+// "bitflip:0x3000:0x1" 꼴을 쪼개서 주입한다.
+// tc 시나리오들은 결함을 스스로 만드니까, 이 옵션은 --test constant/march와 짝
+static int apply_inject(DramModel *dram, const char *spec)
+{
+    char type[16];
+    const char *first = NULL;
+    const char *second = NULL;
+    char *end = NULL;
+    size_t type_len = 0;
+    uint32_t address = 0;
+    uint32_t mask = 0;
+    int rc = -1;
+
+    first = strchr(spec, ':');
+    if (first == NULL)
+    {
+        return -1;
+    }
+
+    second = strchr(first + 1, ':');
+    if (second == NULL)
+    {
+        return -1;
+    }
+
+    type_len = (size_t)(first - spec);
+    if (type_len == 0 || type_len >= sizeof(type))
+    {
+        return -1;
+    }
+    memcpy(type, spec, type_len);
+    type[type_len] = '\0';
 
     errno = 0;
-    value = strtoul(argv[1], &endptr, 10);
-    if (errno != 0 || endptr == argv[1] || *endptr != '\0' || value == 0)
+    address = (uint32_t)strtoul(first + 1, &end, 0);
+    if (errno != 0 || end != second)
     {
         return -1;
     }
 
-    *out_mb = (size_t)value;
-    return 0;
+    if (parse_u32(second + 1, &mask) != 0)
+    {
+        return -1;
+    }
+
+    if (strcmp(type, "bitflip") == 0)
+    {
+        rc = dram_inject_bit_flip(dram, address, mask);
+    }
+    else if (strcmp(type, "sa0") == 0)
+    {
+        rc = dram_add_stuck_fault(dram, DRAM_FAULT_STUCK_AT_0, address, mask);
+    }
+    else if (strcmp(type, "sa1") == 0)
+    {
+        rc = dram_add_stuck_fault(dram, DRAM_FAULT_STUCK_AT_1, address, mask);
+    }
+
+    if (rc == 0)
+    {
+        printf("[CLI ] injected %s addr=0x%08X mask=0x%08X\n", type, address, mask);
+    }
+
+    return rc;
 }
 
 static void print_dram_geometry(const DramModel *dram)
@@ -186,12 +308,14 @@ static int dram_address_equals(const DramAddress *left, const DramAddress *right
 }
 
 // TC1. 주소 인코드/디코드 라운드트립 (datasheet p.4 Address Table)
-static int tc1_address_decode(const DramModel *dram)
+static int tc1_address_decode(DramModel *dram, Logger *logger)
 {
     const DramGeometry *geometry = dram_geometry(dram);
     uint32_t bg;
     uint32_t bank;
     size_t probes = 0;
+
+    (void)logger; // tc1은 CSV에 남길 게 없다
 
     if (geometry == NULL)
     {
@@ -784,23 +908,118 @@ static int tc11_retention_refresh(DramModel *dram, Logger *logger)
     return 0;
 }
 
+// CLI 단독 실행 모드: 판정(assert) 없이 돌리고 결과만 CSV로 남긴다.
+// GUI가 "이 조건으로 한 번 돌려줘"를 시키게 될 창구
+static int run_cli_constant(DramModel *dram, Logger *logger)
+{
+    MemoryTestResult result;
+    int failed;
+
+    dram_reset_ecc_stats(dram);
+    failed = memory_test_constant_pattern(dram, REGION_START, REGION_LEN,
+                                          REGION_PATTERN, &result) != 0;
+    logger_row(logger, "cli_constant", failed ? "FAIL" : "PASS", REGION_START,
+               REGION_LEN, REGION_PATTERN, &result, dram, "cli_single_run");
+    printf("[RESULT] cli constant: %s (errors=%zu ecc_corr=%zu ecc_uncorr=%zu)\n",
+           failed ? "FAIL" : "PASS", result.error_count,
+           dram_ecc_correction_count(dram), dram_ecc_uncorrectable_count(dram));
+    return 0;
+}
+
+static int run_cli_march(DramModel *dram, Logger *logger)
+{
+    MemoryTestResult result;
+    int failed;
+
+    dram_reset_ecc_stats(dram);
+    failed = memory_test_march_c_minus(dram, REGION_START, REGION_LEN,
+                                       &result) != 0;
+    logger_row(logger, "cli_march_c_minus", failed ? "FAIL" : "PASS", REGION_START,
+               REGION_LEN, 0, &result, dram, "cli_single_run");
+    printf("[RESULT] cli march c-: %s (errors=%zu ecc_corr=%zu ecc_uncorr=%zu)\n",
+           failed ? "FAIL" : "PASS", result.error_count,
+           dram_ecc_correction_count(dram), dram_ecc_uncorrectable_count(dram));
+    return 0;
+}
+
+// 이름 -> 시나리오 함수. --test tc7 처럼 하나만 골라 돌릴 수 있다
+typedef struct TestEntry
+{
+    const char *name;
+    int (*fn)(DramModel *dram, Logger *logger);
+} TestEntry;
+
+static const TestEntry kTests[] =
+{
+    { "tc1", tc1_address_decode },
+    { "tc2", tc2_topology_pattern },
+    { "tc3", tc3_basic_rw },
+    { "tc4", tc4_constant_pattern },
+    { "tc5", tc5_odecc_escape },
+    { "tc6", tc6_stuck_escape },
+    { "tc7", tc7_scrub_screen },
+    { "tc8", tc8_double_bit },
+    { "tc9", tc9_march_c_minus },
+    { "tc10", tc10_coverage_matrix },
+    { "tc11", tc11_retention_refresh },
+};
+
+static int run_selected(DramModel *dram, Logger *logger, const CliOptions *opt)
+{
+    size_t i;
+
+    if (strcmp(opt->test_name, "constant") == 0)
+    {
+        return run_cli_constant(dram, logger);
+    }
+
+    if (strcmp(opt->test_name, "march") == 0)
+    {
+        return run_cli_march(dram, logger);
+    }
+
+    if (strcmp(opt->test_name, "all") == 0)
+    {
+        // 시나리오 목차 전체: 하나라도 실패하면 즉시 중단
+        for (i = 0; i < sizeof(kTests) / sizeof(kTests[0]); i++)
+        {
+            if (kTests[i].fn(dram, logger) != 0)
+            {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(kTests) / sizeof(kTests[0]); i++)
+    {
+        if (strcmp(opt->test_name, kTests[i].name) == 0)
+        {
+            return kTests[i].fn(dram, logger);
+        }
+    }
+
+    printf("[ERROR] Unknown test name: %s\n", opt->test_name);
+    return -1;
+}
+
 int main(int argc, char **argv)
 {
     DramModel dram;
     Logger logger;
-    size_t dram_mb = 0;
-    size_t dram_bytes = 0;
+    CliOptions opt;
+    int parsed;
+    int result;
 
-    if (parse_dram_size_mb(argc, argv, &dram_mb) != 0)
+    parsed = parse_args(argc, argv, &opt);
+    if (parsed != 0)
     {
-        printf("[ERROR] Invalid DRAM size argument\n");
-        return 1;
+        print_usage(argv[0]);
+        return (parsed > 0) ? 0 : 1;
     }
 
-    dram_bytes = dram_mb * BYTES_PER_MB;
-
     printf("[BOOT] C-Based DRAM Validation Simulator\n");
-    printf("[DRAM] Initializing virtual DRAM: %zu MB\n", dram_mb);
+    printf("[DRAM] Initializing virtual DRAM: %zu MB\n", opt.size_mb);
 
     if (logger_open(&logger, TEST_LOG_PATH) != 0)
     {
@@ -810,7 +1029,7 @@ int main(int argc, char **argv)
 
     printf("[LOG] Writing test log to %s\n", TEST_LOG_PATH);
 
-    if (dram_init(&dram, dram_bytes) != 0)
+    if (dram_init(&dram, opt.size_mb * BYTES_PER_MB) != 0)
     {
         printf("[ERROR] Failed to initialize virtual DRAM\n");
         logger_close(&logger);
@@ -820,27 +1039,19 @@ int main(int argc, char **argv)
     printf("[DRAM] Virtual DRAM initialized: %zu bytes\n", dram_size_bytes(&dram));
     print_dram_geometry(&dram);
 
-    // 시나리오 목차: 하나라도 실패하면 즉시 중단
-    if (tc1_address_decode(&dram) != 0 ||
-        tc2_topology_pattern(&dram, &logger) != 0 ||
-        tc3_basic_rw(&dram, &logger) != 0 ||
-        tc4_constant_pattern(&dram, &logger) != 0 ||
-        tc5_odecc_escape(&dram, &logger) != 0 ||
-        tc6_stuck_escape(&dram, &logger) != 0 ||
-        tc7_scrub_screen(&dram, &logger) != 0 ||
-        tc8_double_bit(&dram, &logger) != 0 ||
-        tc9_march_c_minus(&dram, &logger) != 0 ||
-        tc10_coverage_matrix(&dram, &logger) != 0 ||
-        tc11_retention_refresh(&dram, &logger) != 0)
+    if (opt.inject_spec != NULL && apply_inject(&dram, opt.inject_spec) != 0)
     {
+        printf("[ERROR] Bad --inject spec: %s\n", opt.inject_spec);
         dram_free(&dram);
         logger_close(&logger);
         return 1;
     }
 
+    result = run_selected(&dram, &logger, &opt);
+
     dram_free(&dram);
     logger_close(&logger);
     printf("[DRAM] Virtual DRAM released\n");
 
-    return 0;
+    return (result != 0) ? 1 : 0;
 }
