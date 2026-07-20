@@ -1,0 +1,17 @@
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = DramTest
+  FILE_GUID      = ebf8ad97-d5ca-42c9-a25a-1162e038e22b # used uuidgen
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 0.1
+  ENTRY_POINT    = UefiMain
+
+[Sources]
+  DramTestApp.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiLib
