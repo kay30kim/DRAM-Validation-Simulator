@@ -2,6 +2,7 @@
 // Reproduces the tc6 escape - a stuck-at bit that On-Die ECC hides,
 // so the boot-time test passes while the cell stays broken
 #include <Uefi.h>
+#include <Library/UefiBootServicesTableLib.h>
 
 #include "../../../core/dram_model.h"
 #include "../../../core/memory_test.h"
@@ -14,6 +15,15 @@
 #define DEMO_PATTERN 0xAAAAAAAAU
 #define DEMO_STUCK_ADDR 0x4000U
 #define DEMO_STUCK_MASK 0x00000002U
+
+static void wait_for_key(void)
+{
+    EFI_INPUT_KEY key;
+    UINTN index;
+
+    gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &index);
+    gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
+}
 
 EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
@@ -65,6 +75,7 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     }
 
     dram_free(&dram);
-    dlog_printf("[DONE] dram_test.efi finished\n");
+    dlog_printf("[DONE] finished - press any key to exit\n");
+    wait_for_key();
     return EFI_SUCCESS;
 }

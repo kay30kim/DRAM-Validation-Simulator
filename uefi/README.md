@@ -29,6 +29,7 @@ Boots with no OS and prints:
 [DRAM] 16 MB, [ROW(9) | BG(3) | BA(2) | COL(10)]
 [ECC ] corrected=4 uncorrectable=0
 [RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot
+[DONE] finished - press any key to exit
 ```
 
 ## Layout
