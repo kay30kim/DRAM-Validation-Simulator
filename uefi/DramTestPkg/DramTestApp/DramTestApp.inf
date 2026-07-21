@@ -8,6 +8,12 @@
 
 [Sources]
   DramTestApp.c
+  plat_uefi.c
+  string.h
+  core_dram_model.c
+  core_memory_test.c
+  core_odecc.c
+  core_dlog.c
 
 [Packages]
   MdePkg/MdePkg.dec
