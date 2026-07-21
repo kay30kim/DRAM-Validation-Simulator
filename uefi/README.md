@@ -22,7 +22,21 @@ cp <build>/DramTest.efi uefi/esp/EFI/BOOT/BOOTX64.EFI
 bash scripts/run_qemu.sh
 ```
 
+Boots with no OS and prints:
+
+```
+[BOOT] dram_test.efi - DDR5 validation core, pre-OS
+[DRAM] 16 MB, [ROW(9) | BG(3) | BA(2) | COL(10)]
+[ECC ] corrected=4 uncorrectable=0
+[RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot
+```
+
 ## Layout
 
 - `DramTestPkg.dec` / `.dsc` — package and platform build files
 - `DramTestApp/` — the application module (`UefiMain` entry point)
+- `DramTestApp/core_*.c` — one-line `#include` of each `core/` source. EDK2
+  can't list files outside the module folder, so the host core is pulled in
+  and compiled unchanged.
+- `DramTestApp/plat_uefi.c` + `string.h` — the `plat.h` implementation plus
+  `memset`/`memcpy`, since EDK2 has no libc.
