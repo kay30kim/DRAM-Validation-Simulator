@@ -47,7 +47,7 @@ static void test_real_memory(void)
 
     map_size += 2 * desc_size;
     // AllocatePool -> map_size Byte 크기만큼 버퍼 할당, map에 시작 주소 반환
-    if (gBS->AllocatePool(EfiBootServicesData, map_size, (VOID **)&map) != EFI_SUCCESS)
+    if (gBS->AllocatePool(EfiLoaderData, map_size, (VOID **)&map) != EFI_SUCCESS)
     {
         return;
     }
@@ -73,7 +73,7 @@ static void test_real_memory(void)
                 (size_t)usable_pages, (size_t)(usable_pages * 4096 / (1024 * 1024)));
 
     // AllocatePages -> 4KB 페이지 단위로 phys에 할당된 시작 주소 받음. (연속된 크기를 pages 수만큼 받음)
-    if (gBS->AllocatePages(AllocateAnyPages, EfiBootServicesData, pages, &phys) != EFI_SUCCESS)
+    if (gBS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &phys) != EFI_SUCCESS)
     {
         dlog_printf("[MMAP] AllocatePages failed\n");
         return;
