@@ -29,8 +29,13 @@ Boots with no OS and prints:
 [DRAM] 16 MB, [ROW(9) | BG(3) | BA(2) | COL(10)]
 [ECC ] corrected=4 uncorrectable=0
 [RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot
+[MMAP] usable memory: 129000 pages (503 MB)
+[TEST] real memory at 0x6000000: PASS (16384 words, 0 bad)
 [DONE] finished - press any key to exit
 ```
+
+Two phases: the simulated escape on the DRAM model, then a real test on
+physical memory the firmware handed out (`GetMemoryMap` + `AllocatePages`).
 
 ## Layout
 
