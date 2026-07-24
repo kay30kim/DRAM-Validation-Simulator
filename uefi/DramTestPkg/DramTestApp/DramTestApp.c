@@ -148,7 +148,6 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     int pass;
     int escaped;
     int mem_pass;
-    size_t corrected;
     CHAR8 csv[256];
     UINTN csv_len;
 
@@ -179,9 +178,8 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 dram_ecc_correction_count(&dram),
                 dram_ecc_uncorrectable_count(&dram));
 
-    // dram_free하고 test_real_memory() 호출시에는 ecc count 미리 저장
-    corrected = dram_ecc_correction_count(&dram);
-    escaped = pass && result.error_count == 0 && corrected > 0;
+    escaped = pass && result.error_count == 0 &&
+              dram_ecc_correction_count(&dram) > 0;
     if (escaped)
     {
         dlog_printf("[RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot\n");
@@ -191,8 +189,6 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         dlog_printf("[RESULT] FAIL: expected escape did not happen\n");
     }
 
-    dram_free(&dram);
-
     mem_pass = test_real_memory();
 
     // 두 결과를 CSV로 만들어 부팅 디스크에 저장. host 로그와 같은 형식이라 GUI가 읽는다
@@ -200,11 +196,14 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                           "test,result,ecc_corrected,note\r\n"
                           "escape,%a,%d,hidden_by_odecc\r\n"
                           "real_memory,%a,0,physical_pages\r\n",
-                          escaped ? "PASS" : "FAIL", (int)corrected,
+                          escaped ? "PASS" : "FAIL",
+                          (int)dram_ecc_correction_count(&dram),
                           mem_pass ? "PASS" : "FAIL");
     save_csv(ImageHandle, csv, csv_len);
     dlog_printf("[CSV ] wrote dram_boot_results.csv (%zu bytes)\n", (size_t)csv_len);
 
+    // 다 쓴 다음 마지막에 정리
+    dram_free(&dram);
     dlog_printf("[DONE] finished - press any key to exit\n");
     wait_for_key();
     return EFI_SUCCESS;
