@@ -202,7 +202,6 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     save_csv(ImageHandle, csv, csv_len);
     dlog_printf("[CSV ] wrote dram_boot_results.csv (%zu bytes)\n", (size_t)csv_len);
 
-    // 다 쓴 다음 마지막에 정리
     dram_free(&dram);
     dlog_printf("[DONE] finished - press any key to exit\n");
     wait_for_key();
