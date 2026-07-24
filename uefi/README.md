@@ -31,11 +31,18 @@ Boots with no OS and prints:
 [RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot
 [MMAP] usable memory: 129000 pages (503 MB)
 [TEST] real memory at 0x6000000: PASS (16384 words, 0 bad)
+[CSV ] wrote dram_boot_results.csv (98 bytes)
 [DONE] finished - press any key to exit
 ```
 
 Two phases: the simulated escape on the DRAM model, then a real test on
 physical memory the firmware handed out (`GetMemoryMap` + `AllocatePages`).
+Results are written to `dram_boot_results.csv` on the boot disk (EFI File
+Protocol), so the GUI can read the boot run like any other test log.
+
+Note: under QEMU's `fat:rw:` the written file may not sync back to the host
+`uefi/esp/` folder reliably - that is a QEMU quirk, not the app. On real
+firmware the file lands on the ESP normally.
 
 ## Layout
 

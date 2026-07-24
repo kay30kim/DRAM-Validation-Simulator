@@ -22,3 +22,8 @@
   UefiApplicationEntryPoint
   UefiLib
   UefiBootServicesTableLib
+  PrintLib
+
+[Protocols]
+  gEfiLoadedImageProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid

@@ -3,6 +3,9 @@
 // so the boot-time test passes while the cell stays broken
 #include <Uefi.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/PrintLib.h>
+#include <Protocol/LoadedImage.h>
+#include <Protocol/SimpleFileSystem.h>
 
 #include "../../../core/dram_model.h"
 #include "../../../core/memory_test.h"
@@ -28,7 +31,7 @@ static void wait_for_key(void)
 // 시뮬레이터가 아니라 진짜 물리 메모리를 테스트한다. 실제 스크린 프로그램이
 // pre-OS에서 하는 일 그대로: 펌웨어에게 메모리 지도를 받아 쓸 수 있는 영역을
 // 파악하고, 물리 페이지를 할당해 패턴을 써보고 되읽어 확인한다
-static void test_real_memory(void)
+static int test_real_memory(void)
 {
     EFI_MEMORY_DESCRIPTOR *map = NULL;
     UINTN map_size = 0;
@@ -49,13 +52,13 @@ static void test_real_memory(void)
     // AllocatePool -> map_size Byte 크기만큼 버퍼 할당, map에 시작 주소 반환
     if (gBS->AllocatePool(EfiLoaderData, map_size, (VOID **)&map) != EFI_SUCCESS)
     {
-        return;
+        return 0;
     }
     // GetMemoryMap -> 현재 UEFI 메모리 맵의 descriptor 목록을 map 버퍼에 채움
     if (gBS->GetMemoryMap(&map_size, map, &map_key, &desc_size, &desc_version) != EFI_SUCCESS)
     {
         gBS->FreePool(map);
-        return;
+        return 0;
     }
 
     for (i = 0; i < map_size / desc_size; i++) // sizeof(EFI_MEMORY_DESCRIPTOR)로 하면 안 됨. 펌웨어가 더 크게 쓸 수 있다
@@ -76,7 +79,7 @@ static void test_real_memory(void)
     if (gBS->AllocatePages(AllocateAnyPages, EfiLoaderData, pages, &phys) != EFI_SUCCESS)
     {
         dlog_printf("[MMAP] AllocatePages failed\n");
-        return;
+        return 0;
     }
 
     cells = (UINT32 *)(UINTN)phys;
@@ -98,6 +101,43 @@ static void test_real_memory(void)
                 (size_t)words, (size_t)bad);
 
     gBS->FreePages(phys, pages);
+    return bad == 0;
+}
+
+// 결과를 부팅한 디스크(ESP)에 CSV 파일로 남긴다. 부팅 후 GUI가 같은 파일을 읽는다.
+// EFI File Protocol 흐름: 우리가 부팅된 볼륨을 찾고 -> 루트를 열고 -> 파일을 만들어 쓴다
+static void save_csv(EFI_HANDLE image, const CHAR8 *content, UINTN len)
+{
+    EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = NULL;
+    EFI_FILE_PROTOCOL *root = NULL;
+    EFI_FILE_PROTOCOL *file = NULL;
+    UINTN size = len;
+
+    // LoadedImage로 "우리가 어느 디스크에서 실행됐는지"(DeviceHandle)를 얻는다
+    if (gBS->HandleProtocol(image, &gEfiLoadedImageProtocolGuid, (VOID **)&li) != EFI_SUCCESS)
+    {
+        return;
+    }
+    // 그 디스크의 파일시스템을 잡아 루트 디렉토리를 연다
+    if (gBS->HandleProtocol(li->DeviceHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&fs) != EFI_SUCCESS)
+    {
+        return;
+    }
+    if (fs->OpenVolume(fs, &root) != EFI_SUCCESS)
+    {
+        return;
+    }
+    // 없으면 만들고(CREATE) 쓰기 모드로 연다
+    if (root->Open(root, &file, L"dram_boot_results.csv",
+                   EFI_FILE_MODE_CREATE | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_READ, 0) != EFI_SUCCESS)
+    {
+        root->Close(root);
+        return;
+    }
+    file->Write(file, &size, (VOID *)content);
+    file->Close(file);
+    root->Close(root);
 }
 
 EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -107,8 +147,11 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     const DramGeometry *geometry = NULL;
     int pass;
     int escaped;
+    int mem_pass;
+    size_t corrected;
+    CHAR8 csv[256];
+    UINTN csv_len;
 
-    (void)ImageHandle;
     (void)SystemTable;
 
     dlog_printf("[BOOT] dram_test.efi - DDR5 validation core, pre-OS\n");
@@ -136,10 +179,9 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
                 dram_ecc_correction_count(&dram),
                 dram_ecc_uncorrectable_count(&dram));
 
-    // tc6과 같은 escape 판정: 통과 + 검출 0 + 정정은 일어남
-    escaped = pass &&
-              result.error_count == 0 &&
-              dram_ecc_correction_count(&dram) > 0;
+    // dram_free하고 test_real_memory() 호출시에는 ecc count 미리 저장
+    corrected = dram_ecc_correction_count(&dram);
+    escaped = pass && result.error_count == 0 && corrected > 0;
     if (escaped)
     {
         dlog_printf("[RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot\n");
@@ -151,7 +193,17 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     dram_free(&dram);
 
-    test_real_memory();
+    mem_pass = test_real_memory();
+
+    // 두 결과를 CSV로 만들어 부팅 디스크에 저장. host 로그와 같은 형식이라 GUI가 읽는다
+    csv_len = AsciiSPrint(csv, sizeof(csv),
+                          "test,result,ecc_corrected,note\r\n"
+                          "escape,%a,%d,hidden_by_odecc\r\n"
+                          "real_memory,%a,0,physical_pages\r\n",
+                          escaped ? "PASS" : "FAIL", (int)corrected,
+                          mem_pass ? "PASS" : "FAIL");
+    save_csv(ImageHandle, csv, csv_len);
+    dlog_printf("[CSV ] wrote dram_boot_results.csv (%zu bytes)\n", (size_t)csv_len);
 
     dlog_printf("[DONE] finished - press any key to exit\n");
     wait_for_key();
