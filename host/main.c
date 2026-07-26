@@ -1,6 +1,7 @@
 // 호스트 데모: DDR5 스펙 기반 검증 시나리오 모음.
 // main()은 목차 역할만 하고, 각 시나리오(tcN)는 자기 안에서
 // Arrange(상황 제조) / Act(측정) / Assert(판정)를 끝낸다.
+#include "addr_map.h"
 #include "dram_model.h"
 #include "error_injection.h"
 #include "logger.h"
@@ -113,14 +114,18 @@ typedef struct CliOptions
     size_t size_mb;
     const char *test_name;
     const char *inject_spec;
+    const char *map_name;
+    const char *profile_name;
 } CliOptions;
 
 static void print_usage(const char *prog)
 {
     printf("Usage: %s [options]\n", prog);
     printf("  --size-mb <n>              virtual DRAM size in MB (default %u)\n", DEFAULT_DRAM_MB);
-    printf("  --test <name>              all(default), tc1..tc11, constant, march, shmoo\n");
+    printf("  --test <name>              all(default), tc1..tc11, constant, march, shmoo, addrmap\n");
     printf("  --inject <type:addr:mask>  type: bitflip, sa0, sa1  ex) sa1:0x3000:0x1\n");
+    printf("  --map <name>               address map for addrmap: linear(default), bank_hash, rank_interleave\n");
+    printf("  --profile <name>           module profile for addrmap: 128gb_2hi(default), 256gb_4hi\n");
 }
 
 static int parse_u32(const char *text, uint32_t *out)
@@ -146,6 +151,8 @@ static int parse_args(int argc, char **argv, CliOptions *opt)
     opt->size_mb = DEFAULT_DRAM_MB;
     opt->test_name = "all";
     opt->inject_spec = NULL;
+    opt->map_name = "linear";
+    opt->profile_name = "128gb_2hi";
 
     for (i = 1; i < argc; i++)
     {
@@ -179,6 +186,14 @@ static int parse_args(int argc, char **argv, CliOptions *opt)
         else if (strcmp(name, "--inject") == 0)
         {
             opt->inject_spec = value;
+        }
+        else if (strcmp(name, "--map") == 0)
+        {
+            opt->map_name = value;
+        }
+        else if (strcmp(name, "--profile") == 0)
+        {
+            opt->profile_name = value;
         }
         else
         {
@@ -1088,6 +1103,55 @@ static int run_cli_shmoo(DramModel *dram, Logger *logger)
     return 0;
 }
 
+static void run_cli_addrmap(const CliOptions *opt)
+{
+    static const uint64_t kProbe[6] = {
+        0x000001000ULL, 0x000009000ULL, 0x080009000ULL,
+        0x100001000ULL, 0x180009000ULL, 0x000048000ULL
+    };
+    const AddressProfile *profile = addr_profile_by_name(opt->profile_name);
+    const AddressMap *map = addr_map_by_name(opt->map_name);
+    MappedLocation loc;
+    size_t i;
+
+    if (profile == NULL)
+    {
+        printf("[ERROR] unknown --profile: %s (use 128gb_2hi, 256gb_4hi)\n", opt->profile_name);
+        return;
+    }
+    if (map == NULL)
+    {
+        printf("[ERROR] unknown --map: %s (use linear, bank_hash, rank_interleave)\n", opt->map_name);
+        return;
+    }
+
+    printf("[MAP ] profile %s (%s), map %s (%s)\n",
+           profile->name, profile->desc, map->name, map->desc);
+    printf("[MAP ] address       CS CID BG BA ROW  COL\n");
+    for (i = 0; i < 6U; i++)
+    {
+        if (addr_decode(profile, map, kProbe[i], &loc) != 0)
+        {
+            printf("[MAP ] 0x%09llX  out of range\n", (unsigned long long)kProbe[i]);
+            continue;
+        }
+        printf("[MAP ] 0x%09llX  %u  %u   %u  %u  %-4u %u\n",
+               (unsigned long long)kProbe[i],
+               loc.cs, loc.cid, loc.bg, loc.ba, loc.row, loc.column);
+    }
+
+    // COL/BA/BG는 고정하고 ROW만 증가시켜 mapping별 bank 분산을 비교
+    printf("[MAP ] bank index of 8 sequential rows: ");
+    for (i = 0; i < 8U; i++)
+    {
+        if (addr_decode(profile, map, 0x00010000ULL + (uint64_t)i * 0x8000ULL, &loc) == 0)
+        {
+            printf("%u ", loc.bg * 4U + loc.ba);
+        }
+    }
+    printf("\n");
+}
+
 // 이름 -> 시나리오 함수. --test tc7 처럼 하나만 골라 돌릴 수 있다
 typedef struct TestEntry
 {
@@ -1127,6 +1191,12 @@ static int run_selected(DramModel *dram, Logger *logger, const CliOptions *opt)
     if (strcmp(opt->test_name, "shmoo") == 0)
     {
         return run_cli_shmoo(dram, logger);
+    }
+
+    if (strcmp(opt->test_name, "addrmap") == 0)
+    {
+        run_cli_addrmap(opt);
+        return 0;
     }
 
     if (strcmp(opt->test_name, "all") == 0)

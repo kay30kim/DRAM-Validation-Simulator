@@ -52,18 +52,18 @@ MR 협상)은 테스트 알고리즘의 검출력 검증에 불필요해서 뺐�
 | tREFI 3.9us / tRFC 295ns | — | X 명령 스케줄링 층 |
 | FGR, MR 공간, CA8 indicator | — | X 프로토콜 협상 층 |
 
-## UEFI/BIOS (완료)
+## UEFI/BIOS · 플랫폼 (완료)
 
 | 항목 | 내용 | 구현 |
 |---|---|---|
 | UEFI 포팅 | 동일 core를 EDK2 앱으로 빌드, QEMU/OVMF에서 OS 없이 부팅 실행 | `uefi/DramTestPkg/`, `plat_uefi.c` |
 | 물리 메모리 테스트 | `GetMemoryMap`으로 쓸 수 있는 영역 파악 후 `AllocatePages`로 실제 물리 페이지에 패턴 테스트 | `uefi/.../DramTestApp.c` |
 | 결과 CSV 저장 | EFI File Protocol로 부팅 결과를 ESP에 `dram_boot_results.csv`로 기록 → GUI가 읽음 | `uefi/.../DramTestApp.c` |
+| 컨트롤러 주소 매핑 | 물리 주소 → CS/CID/BG/BA/ROW/COL 변환. 맵 3종을 함수 포인터로: `linear` / `bank_hash`(row 비트를 BG·BA에 XOR, Intel풍·DRAMA 논문) / `rank_interleave`(row 비트로 CS 선택, AMD PPR풍). 모듈 프로파일 2종(`128gb_2hi` CID 1비트 / `256gb_4hi` CID 2비트). `--test addrmap --map <name> --profile <name>`. linear는 뱅크가 한 곳에 뭉치고 bank_hash는 흩어짐 → 테스트 BIOS가 interleave를 끄는 이유. core 무변경, 앞단 변환층 | `host/addr_map.c` |
 
 ## 예정 (로드맵)
 
 | 항목 | 스펙 근거 | 내용 |
 |---|---|---|
 | 모듈 레벨 ECC | p.7 CB0~CB7 (DIMM ECC check bits) | 칩 내부 ODECC와 별개의 2계층 ECC |
-| 컨트롤러 주소 계층 | p.7 CS0~CS1 (Rank Select), p.6 3DS 2Hi/4Hi | 물리 주소 → CS/CID/BG/BA/ROW/COL 변환을 매핑 프로파일 플러그인으로: linear(현행) / 뱅크 XOR 해시(Intel풍, DRAMA 논문 역공학 기반) / 레지스터 파라미터형(AMD PPR풍). 같은 결함이 프로파일·interleave에 따라 흩어져 보이거나 한 칩으로 모임을 재현 — 테스트 BIOS가 interleave를 끄는 이유 |
-| DQ 매핑 | p.14~15 모듈 구성도 | fail 주소+비트 → rank(CS)/층(CID)/불량 칩 위치 역산 (GUI) |
+| DQ 매핑 | p.14~15 모듈 구성도 | addr_map의 CS/CID 역산 결과 → 모듈 구성도 위 불량 칩 하이라이트 (GUI) |
