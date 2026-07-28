@@ -15,6 +15,26 @@
                        Text="경로 확인 후 [CSV 불러오기]를 누르세요"/>
         </StackPanel>
 
+        <!-- 필터 + 정렬 -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+            <TextBlock Text="필터" VerticalAlignment="Center"/>
+            <ComboBox x:Name="FilterBox" Width="130" SelectedIndex="0" SelectionChanged="OnViewChanged">
+                <ComboBoxItem>전체</ComboBoxItem>
+                <ComboBoxItem>escape만</ComboBoxItem>
+                <ComboBoxItem>PASS</ComboBoxItem>
+                <ComboBoxItem>FAIL</ComboBoxItem>
+            </ComboBox>
+            <TextBlock Text="정렬" VerticalAlignment="Center"/>
+            <ComboBox x:Name="SortBox" Width="150" SelectedIndex="0" SelectionChanged="OnViewChanged">
+                <ComboBoxItem>파일 순서</ComboBoxItem>
+                <ComboBoxItem>result</ComboBoxItem>
+                <ComboBoxItem>errors 많은순</ComboBoxItem>
+                <ComboBoxItem>corr 많은순</ComboBoxItem>
+            </ComboBox>
+            <TextBlock Text="노란 행 = escape (PASS인데 ECC 정정 발생)"
+                       VerticalAlignment="Center" Opacity="0.7"/>
+        </StackPanel>
+
         <!-- 테이블 헤더 + 행 목록 (고정폭 폰트로 열 맞춤) -->
         <TextBlock x:Name="HeaderText" DockPanel.Dock="Top" Margin="0,12,0,4"
                    FontFamily="Menlo,Consolas,monospace" FontSize="12" FontWeight="Bold"/>
