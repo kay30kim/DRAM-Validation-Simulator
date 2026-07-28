@@ -1,6 +1,6 @@
-// dram_test.efi: the same validation core, now running before any OS.
-// Reproduces the tc6 escape - a stuck-at bit that On-Die ECC hides,
-// so the boot-time test passes while the cell stays broken
+//   1) sim_escape_demo   - 시뮬레이터에서 On-Die ECC escape 재현
+//   2) test_real_memory  - 펌웨어가 준 진짜 물리 메모리 테스트
+//   3) write_results_csv - 두 결과를 ESP에 CSV로 저장 (GUI가 읽음)
 #include <Uefi.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/PrintLib.h>
@@ -28,9 +28,44 @@ static void wait_for_key(void)
     gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
 }
 
-// 시뮬레이터가 아니라 진짜 물리 메모리를 테스트한다. 실제 스크린 프로그램이
-// pre-OS에서 하는 일 그대로: 펌웨어에게 메모리 지도를 받아 쓸 수 있는 영역을
-// 파악하고, 물리 페이지를 할당해 패턴을 써보고 되읽어 확인한다
+static void print_geometry(const DramModel *dram)
+{
+    const DramGeometry *g = dram_geometry(dram);
+
+    dlog_printf("[DRAM] %u MB, [ROW(%u) | BG(%u) | BA(%u) | COL(%u)]\n",
+                DEMO_DRAM_MB, g->row_bits, g->bg_bits, g->ba_bits, g->col_bits);
+}
+
+// 시뮬레이터 escape 재현: stuck-at 결함을 On-Die ECC가 숨겨 테스트가 통과 (tc6)
+static int sim_escape_demo(DramModel *dram)
+{
+    MemoryTestResult result;
+    int pass;
+    int escaped;
+
+    dram_reset_ecc_stats(dram);
+    dram_add_stuck_fault(dram, DRAM_FAULT_STUCK_AT_0, DEMO_STUCK_ADDR, DEMO_STUCK_MASK);
+
+    pass = memory_test_constant_pattern(dram, DEMO_REGION_START, DEMO_REGION_LEN,
+                                        DEMO_PATTERN, &result) == 0;
+
+    dlog_printf("[ECC ] corrected=%zu uncorrectable=%zu\n",
+                dram_ecc_correction_count(dram),
+                dram_ecc_uncorrectable_count(dram));
+
+    escaped = pass && result.error_count == 0 && dram_ecc_correction_count(dram) > 0;
+    if (escaped)
+    {
+        dlog_printf("[RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot\n");
+    }
+    else
+    {
+        dlog_printf("[RESULT] FAIL: expected escape did not happen\n");
+    }
+    return escaped;
+}
+
+// UEFI에서 할당받은 실제 메모리에 패턴을 쓰고 다시 읽어 오류를 확인
 static int test_real_memory(void)
 {
     EFI_MEMORY_DESCRIPTOR *map = NULL;
@@ -140,16 +175,27 @@ static void save_csv(EFI_HANDLE image, const CHAR8 *content, UINTN len)
     root->Close(root);
 }
 
+// 두 결과를 host 로그와 같은 CSV 형식으로 만들어 ESP에 저장
+static void write_results_csv(EFI_HANDLE image, int escaped, int corrected, int mem_pass)
+{
+    CHAR8 csv[256];
+    UINTN len;
+
+    len = AsciiSPrint(csv, sizeof(csv),
+                      "test,result,ecc_corrected,note\r\n"
+                      "escape,%a,%d,hidden_by_odecc\r\n"
+                      "real_memory,%a,0,physical_pages\r\n",
+                      escaped ? "PASS" : "FAIL", corrected,
+                      mem_pass ? "PASS" : "FAIL");
+    save_csv(image, csv, len);
+    dlog_printf("[CSV ] wrote dram_boot_results.csv (%zu bytes)\n", (size_t)len);
+}
+
 EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     DramModel dram;
-    MemoryTestResult result;
-    const DramGeometry *geometry = NULL;
-    int pass;
     int escaped;
     int mem_pass;
-    CHAR8 csv[256];
-    UINTN csv_len;
 
     (void)SystemTable;
 
@@ -160,47 +206,12 @@ EFI_STATUS EFIAPI UefiMain(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         dlog_printf("[ERROR] dram_init failed\n");
         return EFI_OUT_OF_RESOURCES;
     }
+    print_geometry(&dram);
 
-    geometry = dram_geometry(&dram);
-    dlog_printf("[DRAM] %u MB, [ROW(%u) | BG(%u) | BA(%u) | COL(%u)]\n",
-                DEMO_DRAM_MB, geometry->row_bits, geometry->bg_bits,
-                geometry->ba_bits, geometry->col_bits);
-
-    dram_reset_ecc_stats(&dram);
-    dram_add_stuck_fault(&dram, DRAM_FAULT_STUCK_AT_0,
-                         DEMO_STUCK_ADDR, DEMO_STUCK_MASK);
-
-    pass = memory_test_constant_pattern(&dram, DEMO_REGION_START,
-                                        DEMO_REGION_LEN, DEMO_PATTERN,
-                                        &result) == 0;
-
-    dlog_printf("[ECC ] corrected=%zu uncorrectable=%zu\n",
-                dram_ecc_correction_count(&dram),
-                dram_ecc_uncorrectable_count(&dram));
-
-    escaped = pass && result.error_count == 0 &&
-              dram_ecc_correction_count(&dram) > 0;
-    if (escaped)
-    {
-        dlog_printf("[RESULT] PASS: stuck-at escaped the test (hidden by On-Die ECC), at boot\n");
-    }
-    else
-    {
-        dlog_printf("[RESULT] FAIL: expected escape did not happen\n");
-    }
-
+    escaped = sim_escape_demo(&dram);
     mem_pass = test_real_memory();
-
-    // 두 결과를 CSV로 만들어 부팅 디스크에 저장. host 로그와 같은 형식이라 GUI가 읽는다
-    csv_len = AsciiSPrint(csv, sizeof(csv),
-                          "test,result,ecc_corrected,note\r\n"
-                          "escape,%a,%d,hidden_by_odecc\r\n"
-                          "real_memory,%a,0,physical_pages\r\n",
-                          escaped ? "PASS" : "FAIL",
-                          (int)dram_ecc_correction_count(&dram),
-                          mem_pass ? "PASS" : "FAIL");
-    save_csv(ImageHandle, csv, csv_len);
-    dlog_printf("[CSV ] wrote dram_boot_results.csv (%zu bytes)\n", (size_t)csv_len);
+    write_results_csv(ImageHandle, escaped,
+                      (int)dram_ecc_correction_count(&dram), mem_pass);
 
     dram_free(&dram);
     dlog_printf("[DONE] finished - press any key to exit\n");
