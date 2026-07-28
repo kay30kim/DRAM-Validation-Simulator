@@ -12,6 +12,7 @@ public class Row
 {
     public string Text { get; set; } = "";
     public IBrush RowColor { get; set; } = Brushes.Transparent;
+    public IBrush TextColor { get; set; } = Brushes.White;
     public string Result { get; set; } = "";
     public bool IsEscape { get; set; }
 }
@@ -85,6 +86,7 @@ public partial class MainWindow : Window
         row.IsEscape = escape;
         row.RowColor = escape ? new SolidColorBrush(Color.FromRgb(255, 236, 179))
                               : Brushes.Transparent;
+        row.TextColor = escape ? Brushes.Black : Brushes.White;
         return row;
     }
 

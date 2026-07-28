@@ -32,7 +32,8 @@
             <!-- 한 행을 어떻게 그릴지: 글자는 Text, 배경은 RowColor -->
             <ListBox.ItemTemplate>
                 <DataTemplate x:CompileBindings="False">
-                    <TextBlock Text="{Binding Text}" Background="{Binding RowColor}"/>
+                    <TextBlock Text="{Binding Text}" Background="{Binding RowColor}"
+                               Foreground="{Binding TextColor}"/>
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>
