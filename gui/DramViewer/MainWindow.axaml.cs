@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Layout;
 using Avalonia.Media;
 
 namespace DramViewer;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         PathBox.Text = Path.GetFullPath("../../dram_test_results.csv");
+        DrawHeatmap();
     }
 
     // [CSV 불러오기] 버튼
@@ -152,5 +155,99 @@ public partial class MainWindow : Window
             s += v.PadRight(ColWidth[i]) + " ";
         }
         return s;
+    }
+
+    // ---- 히트맵 ----
+    // host의 --test addrmap이 만든 bank_map.csv(뱅크별 linear/bank_hash 카운트)를
+    // 읽어 격자를 그린다. 뱅크 계산은 host/addr_map.c가 하고 여기선 그리기만
+
+    // bank_map.csv의 각 뱅크 카운트. [뱅크][0]=linear, [뱅크][1]=bank_hash
+    readonly int[,] _bank = new int[32, 2];
+    bool _bankLoaded;
+
+    void OnHeatChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        DrawHeatmap();
+    }
+
+    void LoadBankMap()
+    {
+        _bankLoaded = false;
+        string path = Path.GetFullPath("../../bank_map.csv");
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        string[] lines = File.ReadAllLines(path);
+        for (int i = 1; i < lines.Length; i++)
+        {
+            string[] f = lines[i].Split(',');
+            if (f.Length < 3)
+            {
+                continue;
+            }
+            int bank = ToInt(f[0]);
+            if (bank >= 0 && bank < 32)
+            {
+                _bank[bank, 0] = ToInt(f[1]);
+                _bank[bank, 1] = ToInt(f[2]);
+            }
+        }
+        _bankLoaded = true;
+    }
+
+    void DrawHeatmap()
+    {
+        if (HeatGrid == null)
+        {
+            return;
+        }
+        if (!_bankLoaded)
+        {
+            LoadBankMap();
+        }
+        if (!_bankLoaded)
+        {
+            HeatStatus.Text = "bank_map.csv 없음 (host: ./dram_test --test addrmap)";
+            return;
+        }
+
+        int col = HeatMapBox.SelectedIndex; // 0 linear, 1 bank_hash
+        int max = 1;
+        int lit = 0;
+        for (int i = 0; i < 32; i++)
+        {
+            if (_bank[i, col] > max) { max = _bank[i, col]; }
+            if (_bank[i, col] > 0) { lit++; }
+        }
+
+        HeatGrid.Children.Clear();
+        for (int i = 0; i < 32; i++)
+        {
+            HeatGrid.Children.Add(MakeCell(i, _bank[i, col], max));
+        }
+        HeatStatus.Text = "fail이 닿은 뱅크: " + lit + "/32";
+    }
+
+    // 한 뱅크 칸. fail이 많을수록 빨갛게
+    static Control MakeCell(int bank, int count, int max)
+    {
+        byte red = (byte)(40 + count * 200 / max);
+        Border cell = new Border();
+        cell.Background = (count == 0)
+            ? new SolidColorBrush(Color.FromRgb(40, 40, 40))
+            : new SolidColorBrush(Color.FromRgb(red, 40, 40));
+        cell.BorderBrush = Brushes.Black;
+        cell.BorderThickness = new Thickness(1);
+
+        TextBlock label = new TextBlock();
+        label.Text = "b" + bank + "\n" + count;
+        label.Foreground = Brushes.White;
+        label.FontSize = 11;
+        label.HorizontalAlignment = HorizontalAlignment.Center;
+        label.VerticalAlignment = VerticalAlignment.Center;
+        cell.Child = label;
+        return cell;
     }
 }
