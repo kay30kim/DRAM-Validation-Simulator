@@ -1,41 +1,61 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="DramViewer.MainWindow"
-        Title="DRAM Test Viewer" Width="960" Height="540">
+        Title="DRAM Test Viewer" Width="960" Height="560">
 
-    <DockPanel Margin="12">
-        <!-- 상단: CSV 경로 + 불러오기 -->
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8">
-            <TextBox x:Name="PathBox" Width="430" PlaceholderText="dram_test_results.csv 경로"/>
-            <Button Content="CSV 불러오기" Click="OnLoadClick"/>
-            <TextBlock x:Name="StatusText" VerticalAlignment="Center"
-                       Text="경로 확인 후 [CSV 불러오기]를 누르세요"/>
-        </StackPanel>
+    <TabControl Margin="8">
 
-        <!-- 필터 -->
-        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-            <TextBlock Text="필터" VerticalAlignment="Center"/>
-            <ComboBox x:Name="FilterBox" Width="130" SelectedIndex="0" SelectionChanged="OnViewChanged">
-                <ComboBoxItem>전체</ComboBoxItem>
-                <ComboBoxItem>escape만</ComboBoxItem>
-                <ComboBoxItem>PASS</ComboBoxItem>
-                <ComboBoxItem>FAIL</ComboBoxItem>
-            </ComboBox>
-            <TextBlock Text="노란 행 = escape (PASS인데 ECC 정정 발생)"
-                       VerticalAlignment="Center" Opacity="0.7"/>
-        </StackPanel>
+        <!-- 탭 1: CSV 로그 테이블 -->
+        <TabItem Header="로그">
+            <DockPanel Margin="4">
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8">
+                    <TextBox x:Name="PathBox" Width="430" PlaceholderText="dram_test_results.csv 경로"/>
+                    <Button Content="CSV 불러오기" Click="OnLoadClick"/>
+                    <TextBlock x:Name="StatusText" VerticalAlignment="Center"
+                               Text="경로 확인 후 [CSV 불러오기]를 누르세요"/>
+                </StackPanel>
 
-        <!-- 테이블 헤더 + 행 목록 (고정폭 폰트로 열 맞춤) -->
-        <TextBlock x:Name="HeaderText" DockPanel.Dock="Top" Margin="0,12,0,4"
-                   FontFamily="Menlo,Consolas,monospace" FontSize="12" FontWeight="Bold"/>
-        <ListBox x:Name="RowsList" FontFamily="Menlo,Consolas,monospace" FontSize="12">
-            <!-- 한 행을 어떻게 그릴지: 글자는 Text, 배경은 RowColor -->
-            <ListBox.ItemTemplate>
-                <DataTemplate x:CompileBindings="False">
-                    <TextBlock Text="{Binding Text}" Background="{Binding RowColor}"
-                               Foreground="{Binding TextColor}"/>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
-    </DockPanel>
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                    <TextBlock Text="필터" VerticalAlignment="Center"/>
+                    <ComboBox x:Name="FilterBox" Width="130" SelectedIndex="0" SelectionChanged="OnViewChanged">
+                        <ComboBoxItem>전체</ComboBoxItem>
+                        <ComboBoxItem>escape만</ComboBoxItem>
+                        <ComboBoxItem>PASS</ComboBoxItem>
+                        <ComboBoxItem>FAIL</ComboBoxItem>
+                    </ComboBox>
+                    <TextBlock Text="노란 행 = escape (PASS인데 ECC 정정 발생)"
+                               VerticalAlignment="Center" Opacity="0.7"/>
+                </StackPanel>
+
+                <TextBlock x:Name="HeaderText" DockPanel.Dock="Top" Margin="0,12,0,4"
+                           FontFamily="Menlo,Consolas,monospace" FontSize="12" FontWeight="Bold"/>
+                <ListBox x:Name="RowsList" FontFamily="Menlo,Consolas,monospace" FontSize="12">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:CompileBindings="False">
+                            <TextBlock Text="{Binding Text}" Background="{Binding RowColor}"
+                                       Foreground="{Binding TextColor}"/>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </TabItem>
+
+        <!-- 탭 2: fail bitmap 히트맵 -->
+        <TabItem Header="히트맵">
+            <StackPanel Margin="4" Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="주소 매핑" VerticalAlignment="Center"/>
+                    <ComboBox x:Name="HeatMapBox" Width="140" SelectedIndex="0" SelectionChanged="OnHeatChanged">
+                        <ComboBoxItem>linear</ComboBoxItem>
+                        <ComboBoxItem>bank_hash</ComboBoxItem>
+                    </ComboBox>
+                    <TextBlock x:Name="HeatStatus" VerticalAlignment="Center"/>
+                </StackPanel>
+                <TextBlock Opacity="0.7"
+                           Text="한 약한 column을 여러 row에서 접근한 fail들. linear면 한 뱅크에 뭉치고 bank_hash면 흩어진다 (8 BG x 4 BA = 32 bank)"/>
+                <UniformGrid x:Name="HeatGrid" Columns="8" Height="240"/>
+            </StackPanel>
+        </TabItem>
+
+    </TabControl>
 </Window>
