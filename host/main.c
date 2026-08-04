@@ -1103,6 +1103,8 @@ static int run_cli_shmoo(DramModel *dram, Logger *logger)
     return 0;
 }
 
+static void write_bank_map_csv(const AddressProfile *profile);
+
 static void run_cli_addrmap(const CliOptions *opt)
 {
     static const uint64_t kProbe[6] = {
@@ -1150,6 +1152,48 @@ static void run_cli_addrmap(const CliOptions *opt)
         }
     }
     printf("\n");
+
+    write_bank_map_csv(profile);
+}
+
+// 몇 개 row에 몰린 fail이 어느 뱅크로 가는지를 linear/bank_hash 둘 다 세서
+// bank_map.csv로 남긴다. GUI 히트맵이 이 파일을 읽어 격자를 그린다
+static void write_bank_map_csv(const AddressProfile *profile)
+{
+    static const int kFailRows[] = { 3, 3, 3, 3, 5, 5, 7, 12, 12, 20 };
+    const AddressMap *lin = addr_map_by_name("linear");
+    const AddressMap *hash = addr_map_by_name("bank_hash");
+    int linear_count[32] = { 0 };
+    int hash_count[32] = { 0 };
+    MappedLocation loc;
+    FILE *f;
+    size_t i;
+
+    for (i = 0; i < sizeof(kFailRows) / sizeof(kFailRows[0]); i++)
+    {
+        uint64_t addr = (uint64_t)kFailRows[i] << 15;
+        if (addr_decode(profile, lin, addr, &loc) == 0)
+        {
+            linear_count[loc.bg * 4U + loc.ba]++;
+        }
+        if (addr_decode(profile, hash, addr, &loc) == 0)
+        {
+            hash_count[loc.bg * 4U + loc.ba]++;
+        }
+    }
+
+    f = fopen("bank_map.csv", "w");
+    if (f == NULL)
+    {
+        return;
+    }
+    fprintf(f, "bank,linear,bank_hash\n");
+    for (i = 0; i < 32U; i++)
+    {
+        fprintf(f, "%zu,%d,%d\n", i, linear_count[i], hash_count[i]);
+    }
+    fclose(f);
+    printf("[MAP ] wrote bank_map.csv (32 banks x linear/bank_hash)\n");
 }
 
 // 이름 -> 시나리오 함수. --test tc7 처럼 하나만 골라 돌릴 수 있다

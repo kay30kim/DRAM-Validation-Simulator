@@ -42,4 +42,4 @@ run: all
 	./$(TARGET) --size-mb $(DRAM_MB)
 
 clean:
-	rm -f $(OBJS) $(TARGET) dram_test_results.csv
+	rm -f $(OBJS) $(TARGET) dram_test_results.csv bank_map.csv
