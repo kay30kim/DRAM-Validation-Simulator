@@ -59,7 +59,7 @@ MR 협상)은 테스트 알고리즘의 검출력 검증에 불필요해서 뺐�
 | UEFI 포팅 | 동일 core를 EDK2 앱으로 빌드, QEMU/OVMF에서 OS 없이 부팅 실행 | `uefi/DramTestPkg/`, `plat_uefi.c` |
 | 물리 메모리 테스트 | `GetMemoryMap`으로 쓸 수 있는 영역 파악 후 `AllocatePages`로 실제 물리 페이지에 패턴 테스트 | `uefi/.../DramTestApp.c` |
 | 결과 CSV 저장 | EFI File Protocol로 부팅 결과를 ESP에 `dram_boot_results.csv`로 기록 → GUI가 읽음 | `uefi/.../DramTestApp.c` |
-| 컨트롤러 주소 매핑 | 물리 주소 → CS/CID/BG/BA/ROW/COL 변환. 맵 3종을 함수 포인터로: `linear` / `bank_hash`(row 비트를 BG·BA에 XOR, Intel풍·DRAMA 논문) / `rank_interleave`(row 비트로 CS 선택, AMD PPR풍). 모듈 프로파일 2종(`128gb_2hi` CID 1비트 / `256gb_4hi` CID 2비트). `--test addrmap --map <name> --profile <name>`. linear는 뱅크가 한 곳에 뭉치고 bank_hash는 흩어짐 → 테스트 BIOS가 interleave를 끄는 이유. core 무변경, 앞단 변환층 | `host/addr_map.c` |
+| 컨트롤러 주소 매핑 | 물리 주소 → CS/CID/BG/BA/ROW/COL 변환. 맵 3종을 함수 포인터로: `linear` / `bank_hash`(row 비트를 BG·BA에 XOR, Intel풍·DRAMA 논문) / `rank_interleave`(row 비트로 CS 선택, AMD PPR풍). 모듈 프로파일 2종(`128gb_2hi` CID 1비트 / `256gb_4hi` CID 2비트). `--test addrmap --map <name> --profile <name>`. linear는 뱅크가 한 곳에 뭉치고 bank_hash는 흩어짐 → 테스트 BIOS가 interleave를 끄는 이유. core 무변경, 앞단 변환층. `--test addrmap`이 뱅크별 카운트를 `bank_map.csv`로 저장하고, GUI 히트맵 탭이 그 파일을 읽어 32뱅크 격자로 시각화(계산은 host, 그리기만 GUI) | `host/addr_map.c`, `gui/` |
 
 ## 예정 (로드맵)
 
